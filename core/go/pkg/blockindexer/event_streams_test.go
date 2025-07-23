@@ -18,7 +18,9 @@ package blockindexer
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -30,14 +32,15 @@ import (
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/mocks/rpcclientmocks"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
 
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/rpcclient"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/rpcclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 func mockBlockListenerNil(mRPC *rpcclientmocks.WSClient) {
@@ -49,7 +52,7 @@ func mockBlockListenerNil(mRPC *rpcclientmocks.WSClient) {
 		hbh := args[1].(*string)
 		*hbh = "filter_id1"
 	}).Maybe()
-	mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getFilterChanges", "filter_id1").Return(nil).Run(func(args mock.Arguments) {
+	mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getFilterChanges", []interface{}{"filter_id1"}).Return(nil).Run(func(args mock.Arguments) {
 		hbh := args[1].(*[]ethtypes.HexBytes0xPrefix)
 		*hbh = []ethtypes.HexBytes0xPrefix{}
 	}).Maybe()
@@ -72,7 +75,7 @@ func TestInternalEventStreamDeliveryAtHead(t *testing.T) {
 	var esID string
 	calledPostCommit := false
 	err := bi.Start(&InternalEventStream{
-		Handler: func(ctx context.Context, tx *gorm.DB, batch *EventDeliveryBatch) (PostCommit, error) {
+		HandlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
 			if esID == "" {
 				esID = batch.StreamID.String()
 			} else {
@@ -87,7 +90,8 @@ func TestInternalEventStreamDeliveryAtHead(t *testing.T) {
 				case <-ctx.Done():
 				}
 			}
-			return func() { calledPostCommit = true }, nil
+			dbTX.AddPostCommit(func(ctx context.Context) { calledPostCommit = true })
+			return nil
 		},
 		Definition: &EventStream{
 			Name: "unit_test",
@@ -135,7 +139,7 @@ func TestInternalEventStreamDeliveryAtHeadWithSourceAddress(t *testing.T) {
 	_, bi, mRPC, blDone := newTestBlockIndexer(t)
 	defer blDone()
 
-	sourceContractAddress := tktypes.MustEthAddress(tktypes.RandHex(20))
+	sourceContractAddress := pldtypes.MustEthAddress(pldtypes.RandHex(20))
 
 	// Mock up the block calls to the blockchain for 15 blocks
 	blocks, receipts := testBlockArray(t, 15, *sourceContractAddress.Address0xHex())
@@ -164,7 +168,7 @@ func TestInternalEventStreamDeliveryAtHeadWithSourceAddress(t *testing.T) {
 	var esID string
 	calledPostCommit := false
 	err := bi.Start(&InternalEventStream{
-		Handler: func(ctx context.Context, tx *gorm.DB, batch *EventDeliveryBatch) (PostCommit, error) {
+		HandlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
 			if esID == "" {
 				esID = batch.StreamID.String()
 			} else {
@@ -179,7 +183,8 @@ func TestInternalEventStreamDeliveryAtHeadWithSourceAddress(t *testing.T) {
 				case <-ctx.Done():
 				}
 			}
-			return func() { calledPostCommit = true }, nil
+			dbTX.AddPostCommit(func(ctx context.Context) { calledPostCommit = true })
+			return nil
 		},
 		Definition: definition,
 	})
@@ -213,7 +218,7 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 	// Set up our handler, even though it won't be driven with anything yet
 	eventCollector := make(chan *pldapi.EventWithData)
 	var esID string
-	handler := func(ctx context.Context, tx *gorm.DB, batch *EventDeliveryBatch) (PostCommit, error) {
+	handler := func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
 		if esID == "" {
 			esID = batch.StreamID.String()
 		} else {
@@ -228,7 +233,7 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 			case <-ctx.Done():
 			}
 		}
-		return nil, nil
+		return nil
 	}
 
 	// Do a full start now without a block listener, and wait for the ut notification of all the blocks
@@ -236,15 +241,16 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 	preCommitCount := 0
 	err := bi.Start(&InternalEventStream{
 		Type: IESTypePreCommitHandler,
-		PreCommitHandler: func(ctx context.Context, dbTX *gorm.DB, blocks []*pldapi.IndexedBlock, transactions []*IndexedTransactionNotify) (PostCommit, error) {
+		PreCommitHandler: func(ctx context.Context, dbTX persistence.DBTX, blocks []*pldapi.IndexedBlock, transactions []*IndexedTransactionNotify) error {
 			// Return an error once to drive a retry
 			preCommitCount++
 			if preCommitCount == 0 {
-				return nil, fmt.Errorf("pop")
+				return fmt.Errorf("pop")
 			}
-			return func() {
+			dbTX.AddPostCommit(func(ctx context.Context) {
 				utBatchNotify <- blocks
-			}, nil
+			})
+			return nil
 		},
 	})
 	require.NoError(t, err)
@@ -269,9 +275,9 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 			},
 		}},
 	}
-	_, err = bi.AddEventStream(ctx, &InternalEventStream{
-		Definition: internalESConfig,
-		Handler:    handler,
+	_, err = bi.AddEventStream(ctx, bi.persistence.NOTX(), &InternalEventStream{
+		Definition:  internalESConfig,
+		HandlerDBTX: handler,
 	})
 	require.NoError(t, err)
 
@@ -295,6 +301,15 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 		}
 	}
 
+	// Wait for checkpoint
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		es := bi.eventStreams[uuid.MustParse(esID)]
+		baseBlock, err := es.readDBCheckpoint()
+		assert.NoError(t, err)
+		assert.NotNil(t, baseBlock)
+		assert.Equal(t, int64(14), *baseBlock, "Checkpoint block should be 14")
+	}, testTimeout(t), 10*time.Millisecond, "Checkpoint not written")
+
 	// Stop and restart
 	bi.Stop()
 
@@ -304,8 +319,8 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 	}, bi.persistence, bi.blockListener)
 	require.NoError(t, err)
 	err = bi.Start(&InternalEventStream{
-		Definition: internalESConfig,
-		Handler:    handler,
+		Definition:  internalESConfig,
+		HandlerDBTX: handler,
 	})
 	require.NoError(t, err)
 
@@ -313,7 +328,8 @@ func TestInternalEventStreamDeliveryCatchUp(t *testing.T) {
 	es := bi.eventStreams[uuid.MustParse(esID)]
 	cp, err := es.processCheckpoint()
 	require.NoError(t, err)
-	assert.Equal(t, int64(14), cp)
+	require.NotNil(t, cp)
+	assert.Equal(t, int64(14), *cp)
 
 	// And check we don't get any events
 	select {
@@ -342,15 +358,16 @@ func TestNoMatchingEvents(t *testing.T) {
 	utBatchNotify := make(chan []*pldapi.IndexedBlock)
 	err := bi.Start(&InternalEventStream{
 		Type: IESTypePreCommitHandler,
-		PreCommitHandler: func(ctx context.Context, dbTX *gorm.DB, blocks []*pldapi.IndexedBlock, transactions []*IndexedTransactionNotify) (PostCommit, error) {
-			return func() {
+		PreCommitHandler: func(ctx context.Context, dbTX persistence.DBTX, blocks []*pldapi.IndexedBlock, transactions []*IndexedTransactionNotify) error {
+			dbTX.AddPostCommit(func(ctx context.Context) {
 				utBatchNotify <- blocks
-			}, nil
+			})
+			return nil
 		},
 	}, &InternalEventStream{
-		Handler: func(ctx context.Context, tx *gorm.DB, batch *EventDeliveryBatch) (PostCommit, error) {
+		HandlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
 			require.Fail(t, "should not be called")
-			return nil, nil
+			return nil
 		},
 		Definition: &EventStream{
 			Name: "unit_test",
@@ -398,8 +415,8 @@ func TestTestNotifyEventStreamDoesNotBlock(t *testing.T) {
 		blocks: make(chan *eventStreamBlock),
 	}
 
-	blockHash := ethtypes.MustNewHexBytes0xPrefix(tktypes.RandHex(32))
-	txHash := ethtypes.MustNewHexBytes0xPrefix(tktypes.RandHex(32))
+	blockHash := ethtypes.MustNewHexBytes0xPrefix(pldtypes.RandHex(32))
+	txHash := ethtypes.MustNewHexBytes0xPrefix(pldtypes.RandHex(32))
 	bi.notifyEventStreams(ctx, &blockWriterBatch{
 		blocks: []*BlockInfoJSONRPC{
 			{
@@ -424,6 +441,29 @@ func TestTestNotifyEventStreamDoesNotBlock(t *testing.T) {
 		},
 	})
 
+}
+
+func TestAddEventStreamBadName(t *testing.T) {
+	ctx, bi, _, mp, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+
+	_, err := bi.AddEventStream(ctx, mp.P.NOTX(), &InternalEventStream{})
+	assert.Regexp(t, "PD020005", err)
+}
+
+func TestAddEventStreamBadFromBlockConfiguration(t *testing.T) {
+	ctx, bi, _, mp, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+
+	_, err := bi.AddEventStream(ctx, mp.P.NOTX(), &InternalEventStream{
+		Definition: &EventStream{
+			Name: "testing",
+			Config: EventStreamConfig{
+				FromBlock: json.RawMessage(`"one"`),
+			},
+		},
+	})
+	assert.Regexp(t, "PD011300", err)
 }
 
 func TestUpsertInternalEventQueryExistingStreamFail(t *testing.T) {
@@ -476,7 +516,7 @@ func TestUpsertInternalEventStreamMismatchExistingSourceAddress(t *testing.T) {
 			Name: "testing",
 			Sources: []EventStreamSource{{
 				ABI:     a,
-				Address: tktypes.MustEthAddress(tktypes.RandHex(20)),
+				Address: pldtypes.MustEthAddress(pldtypes.RandHex(20)),
 			}},
 		},
 	})
@@ -555,6 +595,172 @@ func TestUpsertInternalEventStreamCreateFail(t *testing.T) {
 	require.NoError(t, p.Mock.ExpectationsWereMet())
 }
 
+func TestRemoveEventStream(t *testing.T) {
+	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+	esID := uuid.New()
+	eventStream := &eventStream{
+		definition: &EventStream{
+			ID: esID,
+		},
+	}
+
+	// doesn't exist
+	err := bi.RemoveEventStream(ctx, esID)
+	require.ErrorContains(t, err, "PD011312")
+
+	// error calling delete
+	bi.eventStreams[esID] = eventStream
+	bi.eventStreamsHeadSet[esID] = eventStream
+
+	p.Mock.ExpectExec("DELETE.*event_streams").WillReturnError(fmt.Errorf("pop"))
+	err = bi.RemoveEventStream(ctx, esID)
+	require.ErrorContains(t, err, "pop")
+
+	// success
+	p.Mock.ExpectExec("DELETE.*event_streams").WithArgs(esID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err = bi.RemoveEventStream(ctx, esID)
+	require.NoError(t, err)
+	assert.NotContains(t, bi.eventStreams, esID)
+	assert.NotContains(t, bi.eventStreamsHeadSet, esID)
+
+	require.NoError(t, p.Mock.ExpectationsWereMet())
+}
+
+func TestQueryEventStreamDefinitions(t *testing.T) {
+	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+
+	q := query.NewQueryBuilder().
+		Equal("name", "test-es").
+		Limit(10).
+		Query()
+
+	// limit errors
+	_, err := bi.QueryEventStreamDefinitions(ctx, bi.persistence.NOTX(), EventStreamTypePTXBlockchainEventListener.Enum(), nil)
+	assert.ErrorContains(t, err, "PD011311")
+	_, err = bi.QueryEventStreamDefinitions(ctx, bi.persistence.NOTX(), EventStreamTypePTXBlockchainEventListener.Enum(), query.NewQueryBuilder().Query())
+	assert.ErrorContains(t, err, "PD011311")
+	_, err = bi.QueryEventStreamDefinitions(ctx, bi.persistence.NOTX(), EventStreamTypePTXBlockchainEventListener.Enum(), query.NewQueryBuilder().Limit(0).Query())
+	assert.ErrorContains(t, err, "PD011311")
+
+	// error
+	p.Mock.ExpectQuery("SELECT.*event_streams").WillReturnError(fmt.Errorf("pop"))
+	_, err = bi.QueryEventStreamDefinitions(ctx, bi.persistence.NOTX(), EventStreamTypePTXBlockchainEventListener.Enum(), q)
+	assert.ErrorContains(t, err, "pop")
+
+	//success
+	p.Mock.ExpectQuery("SELECT.*event_streams").WithArgs(EventStreamTypePTXBlockchainEventListener.Enum(), "test-es", 10).
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"id", "name", "type"},
+		).AddRow(uuid.New().String(), "test-es", EventStreamTypePTXBlockchainEventListener.Enum()))
+	result, err := bi.QueryEventStreamDefinitions(ctx, bi.persistence.NOTX(), EventStreamTypePTXBlockchainEventListener.Enum(), q)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "test-es", result[0].Name)
+	assert.Equal(t, EventStreamTypePTXBlockchainEventListener.Enum(), result[0].Type)
+
+	require.NoError(t, p.Mock.ExpectationsWereMet())
+}
+
+func TestStartStopEventStream(t *testing.T) {
+	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+	esID := uuid.New()
+
+	// doesn't exist
+	err := bi.StartEventStream(ctx, esID)
+	require.ErrorContains(t, err, "PD011312")
+
+	err = bi.StopEventStream(ctx, esID)
+	require.ErrorContains(t, err, "PD011312")
+
+	// DB calls when starting the event stream
+	p.Mock.ExpectExec("UPDATE.*event_streams").WillReturnError(errors.New("pop"))
+	p.Mock.ExpectExec("UPDATE.*event_streams").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	eventStream := &eventStream{
+		definition: &EventStream{
+			ID: esID,
+		},
+		handlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
+			return nil
+		},
+		bi:        bi,
+		fromBlock: confutil.P(ethtypes.HexUint64(0)),
+	}
+
+	bi.eventStreams[esID] = eventStream
+
+	// first StartEventStream fails
+	err = bi.StartEventStream(ctx, esID)
+	require.ErrorContains(t, err, "pop")
+
+	// second StartEventStream succeeds
+	err = bi.StartEventStream(ctx, esID)
+	require.NoError(t, err)
+
+	assert.NotNil(t, eventStream.detectorDone)
+	assert.NotNil(t, eventStream.dispatcherDone)
+	assert.NotNil(t, eventStream.detectorStarted)
+	assert.NotNil(t, eventStream.dispatcherStarted)
+
+	// Declare expected DB queries that the detector/dispatcher may run
+	p.Mock.ExpectQuery("SELECT.*event_stream_checkpoints").WillReturnRows(sqlmock.NewRows([]string{}))
+	p.Mock.ExpectQuery("SELECT.*indexed_blocks").WillReturnRows(sqlmock.NewRows([]string{}))
+
+	// Wait for goroutines to start
+	<-eventStream.detectorStarted
+	<-eventStream.dispatcherStarted
+
+	// StopEventStream DB update expectations
+	p.Mock.ExpectExec("UPDATE.*event_streams").WillReturnError(errors.New("pop"))
+	p.Mock.ExpectExec("UPDATE.*event_streams").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		err = bi.StopEventStream(ctx, esID)
+		assert.ErrorContains(c, err, "pop")
+	}, testTimeout(t), 1*time.Millisecond)
+
+	// final StopEventStream
+	err = bi.StopEventStream(ctx, esID)
+	require.NoError(t, err)
+
+	assert.Nil(t, eventStream.detectorDone)
+	assert.Nil(t, eventStream.dispatcherDone)
+}
+
+func TestGetEventStreamStatus(t *testing.T) {
+	ctx, bi, _, _, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+	esID := uuid.New()
+
+	// doesn't exist
+	_, err := bi.GetEventStreamStatus(ctx, esID)
+	require.ErrorContains(t, err, "PD011312")
+
+	eventStream := &eventStream{
+		definition: &EventStream{
+			ID: esID,
+		},
+		handlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
+			return nil
+		},
+		bi: bi,
+	}
+	eventStream.checkpoint.Store(25)
+	eventStream.catchup.Store(true)
+	bi.eventStreams[esID] = eventStream
+
+	// success
+	status, err := bi.GetEventStreamStatus(ctx, esID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(25), status.CheckpointBlock)
+	assert.True(t, status.Catchup)
+}
+
 func TestProcessCheckpointFail(t *testing.T) {
 	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
 	defer done()
@@ -563,10 +769,12 @@ func TestProcessCheckpointFail(t *testing.T) {
 	p.Mock.ExpectQuery("SELECT.*event_stream_checkpoints").WillReturnError(fmt.Errorf("pop"))
 
 	es := &eventStream{
-		bi:           bi,
-		ctx:          ctx,
-		definition:   &EventStream{ID: uuid.New()},
-		detectorDone: make(chan struct{}),
+		bi:              bi,
+		ctx:             ctx,
+		definition:      &EventStream{ID: uuid.New()},
+		detectorStarted: make(chan struct{}),
+		detectorDone:    make(chan struct{}),
+		fromBlock:       confutil.P(ethtypes.HexUint64(0)),
 	}
 	es.detector()
 
@@ -582,10 +790,12 @@ func TestGetHighestIndexedBlockFail(t *testing.T) {
 	p.Mock.ExpectQuery("SELECT.*indexed_blocks").WillReturnError(fmt.Errorf("pop"))
 
 	es := &eventStream{
-		bi:           bi,
-		ctx:          ctx,
-		definition:   &EventStream{ID: uuid.New()},
-		detectorDone: make(chan struct{}),
+		bi:              bi,
+		ctx:             ctx,
+		definition:      &EventStream{ID: uuid.New()},
+		detectorStarted: make(chan struct{}),
+		detectorDone:    make(chan struct{}),
+		fromBlock:       confutil.P(ethtypes.HexUint64(0)),
 	}
 	es.detector()
 
@@ -626,25 +836,34 @@ func testReturnToCatchupAfterStart(t *testing.T, headBlock int64) {
 				ABI: testABI,
 			}},
 		},
-		blocks:       make(chan *eventStreamBlock),
-		dispatch:     make(chan *eventDispatch),
-		detectorDone: make(chan struct{}),
-		serializer:   tktypes.JSONFormatOptions("").GetABISerializerIgnoreErrors(ctx),
+		blocks:          make(chan *eventStreamBlock),
+		dispatch:        make(chan *eventDispatch),
+		detectorStarted: make(chan struct{}),
+		detectorDone:    make(chan struct{}),
+		serializer:      pldtypes.JSONFormatOptions("").GetABISerializerIgnoreErrors(ctx),
+		fromBlock:       confutil.P(ethtypes.HexUint64(0)),
 	}
 	go func() {
 		assert.NotPanics(t, func() { es.detector() })
 	}()
+	<-es.detectorStarted
 
 	// This will be ignored as behind our head
-	es.blocks <- &eventStreamBlock{blockNumber: 5}
+	es.blocks <- &eventStreamBlock{
+		block: &BlockInfoJSONRPC{
+			Number: 5,
+		},
+	}
 
 	// notify block ten
 	es.blocks <- &eventStreamBlock{
-		blockNumber: 10,
+		block: &BlockInfoJSONRPC{
+			Number: 10,
+		},
 		events: []*LogJSONRPC{
 			{
-				BlockHash:        ethtypes.MustNewHexBytes0xPrefix(tktypes.RandHex(32)),
-				TransactionHash:  ethtypes.MustNewHexBytes0xPrefix(tktypes.RandHex(32)),
+				BlockHash:        ethtypes.MustNewHexBytes0xPrefix(pldtypes.RandHex(32)),
+				TransactionHash:  ethtypes.MustNewHexBytes0xPrefix(pldtypes.RandHex(32)),
 				BlockNumber:      10,
 				TransactionIndex: 0,
 				LogIndex:         0,
@@ -680,12 +899,98 @@ func TestExitInCatchupPhase(t *testing.T) {
 				ABI: testABI,
 			}},
 		},
-		blocks:       make(chan *eventStreamBlock),
-		detectorDone: make(chan struct{}),
+		blocks:          make(chan *eventStreamBlock),
+		detectorStarted: make(chan struct{}),
+		detectorDone:    make(chan struct{}),
+		fromBlock:       confutil.P(ethtypes.HexUint64(0)),
 	}
 	go func() {
 		assert.NotPanics(t, func() { es.detector() })
 	}()
+	<-es.detectorDone
+
+	require.NoError(t, p.Mock.ExpectationsWereMet())
+}
+
+func TestStartFromLatest(t *testing.T) {
+	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+
+	p.Mock.ExpectQuery("SELECT.*event_stream_checkpoints").WillReturnRows(sqlmock.NewRows([]string{}))
+
+	cancellableCtx, cancelCtx := context.WithCancel(ctx)
+	es := &eventStream{
+		bi:  bi,
+		ctx: cancellableCtx,
+		definition: &EventStream{
+			ID: uuid.New(),
+			Sources: []EventStreamSource{{
+				ABI: testABI,
+			}},
+		},
+		blocks:          make(chan *eventStreamBlock),
+		dispatch:        make(chan *eventDispatch),
+		detectorStarted: make(chan struct{}),
+		detectorDone:    make(chan struct{}),
+		serializer:      pldtypes.JSONFormatOptions("").GetABISerializerIgnoreErrors(ctx),
+	}
+	go func() {
+		assert.NotPanics(t, func() { es.detector() })
+	}()
+
+	<-es.detectorStarted
+
+	es.blocks <- &eventStreamBlock{
+		block: &BlockInfoJSONRPC{
+			Number: 5,
+		},
+		events: []*LogJSONRPC{
+			{
+				BlockHash:        ethtypes.MustNewHexBytes0xPrefix(pldtypes.RandHex(32)),
+				TransactionHash:  ethtypes.MustNewHexBytes0xPrefix(pldtypes.RandHex(32)),
+				BlockNumber:      5,
+				TransactionIndex: 0,
+				LogIndex:         0,
+			},
+		}}
+	d := <-es.dispatch
+	assert.Equal(t, int64(5), d.event.BlockNumber)
+
+	cancelCtx()
+	<-es.detectorDone
+
+	require.NoError(t, p.Mock.ExpectationsWereMet())
+}
+
+func TestExitStartFromLatest(t *testing.T) {
+	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+
+	p.Mock.ExpectQuery("SELECT.*event_stream_checkpoints").WillReturnRows(sqlmock.NewRows([]string{}))
+
+	cancellableCtx, cancelCtx := context.WithCancel(ctx)
+	es := &eventStream{
+		bi:  bi,
+		ctx: cancellableCtx,
+		definition: &EventStream{
+			ID: uuid.New(),
+			Sources: []EventStreamSource{{
+				ABI: testABI,
+			}},
+		},
+		blocks:          make(chan *eventStreamBlock),
+		dispatch:        make(chan *eventDispatch),
+		detectorStarted: make(chan struct{}),
+		detectorDone:    make(chan struct{}),
+		serializer:      pldtypes.JSONFormatOptions("").GetABISerializerIgnoreErrors(ctx),
+	}
+	go func() {
+		assert.NotPanics(t, func() { es.detector() })
+	}()
+
+	<-es.detectorStarted
+
+	cancelCtx()
 	<-es.detectorDone
 
 	require.NoError(t, p.Mock.ExpectationsWereMet())
@@ -725,18 +1030,21 @@ func TestDispatcherDispatchClosed(t *testing.T) {
 				ABI: testABI,
 			}},
 		},
-		batchSize:      2,                    // aim for two
-		batchTimeout:   1 * time.Microsecond, // but not going to wait
-		dispatch:       make(chan *eventDispatch),
-		dispatcherDone: make(chan struct{}),
-		handler: func(ctx context.Context, tx *gorm.DB, batch *EventDeliveryBatch) (PostCommit, error) {
+		batchSize:         2,                    // aim for two
+		batchTimeout:      1 * time.Microsecond, // but not going to wait
+		dispatch:          make(chan *eventDispatch),
+		dispatcherDone:    make(chan struct{}),
+		dispatcherStarted: make(chan struct{}),
+		handlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *EventDeliveryBatch) error {
 			called = true
-			return nil, fmt.Errorf("pop")
+			return fmt.Errorf("pop")
 		},
 	}
 	go func() {
 		assert.NotPanics(t, func() { es.dispatcher() })
 	}()
+
+	<-es.dispatcherStarted
 
 	es.dispatch <- &eventDispatch{
 		event: &pldapi.EventWithData{
@@ -753,12 +1061,12 @@ func TestProcessCatchupEventPageFailRPC(t *testing.T) {
 	ctx, bi, mRPC, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
 	defer done()
 
-	txHash := tktypes.MustParseBytes32(tktypes.RandHex(32))
+	txHash := pldtypes.MustParseBytes32(pldtypes.RandHex(32))
 
 	bi.retry.UTSetMaxAttempts(2)
-	mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getTransactionReceipt", ethtypes.MustNewHexBytes0xPrefix(txHash.String())).
+	mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getTransactionReceipt", []interface{}{ethtypes.MustNewHexBytes0xPrefix(txHash.String())}).
 		Return(rpcclient.WrapRPCError(rpcclient.RPCCodeInternalError, fmt.Errorf("pop"))).Once()
-	mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getTransactionReceipt", ethtypes.MustNewHexBytes0xPrefix(txHash.String())).
+	mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getTransactionReceipt", []interface{}{ethtypes.MustNewHexBytes0xPrefix(txHash.String())}).
 		Return(nil) // but still not found
 
 	p.Mock.ExpectQuery("SELECT.*indexed_events").WillReturnRows(
@@ -786,25 +1094,25 @@ func TestProcessCatchupEventMultiPageRealDB(t *testing.T) {
 	ctx, bi, mRPC, done := newTestBlockIndexer(t)
 	defer done()
 
-	eventSig := tktypes.Bytes32(testABI.Events()["EventA"].SignatureHashBytes())
+	eventSig := pldtypes.Bytes32(testABI.Events()["EventA"].SignatureHashBytes())
 
 	allBlocks := []*pldapi.IndexedBlock{}
 	allTransactions := []*pldapi.IndexedTransaction{}
 	allEvents := []*pldapi.IndexedEvent{}
 	for b := 1; b < 14; b++ {
-		blockHash := tktypes.Bytes32(tktypes.RandBytes(32))
+		blockHash := pldtypes.RandBytes32()
 		allBlocks = append(allBlocks, &pldapi.IndexedBlock{
 			Number: int64(b),
 			Hash:   blockHash,
 		})
 		for tx := 0; tx < 8; tx++ {
-			txHash := tktypes.Bytes32(tktypes.RandBytes(32))
+			txHash := pldtypes.RandBytes32()
 			allTransactions = append(allTransactions, &pldapi.IndexedTransaction{
 				Hash:             txHash,
 				BlockNumber:      int64(b),
 				TransactionIndex: int64(tx),
-				From:             tktypes.RandAddress(),
-				To:               tktypes.RandAddress(),
+				From:             pldtypes.RandAddress(),
+				To:               pldtypes.RandAddress(),
 				Nonce:            0,
 				Result:           pldapi.TXResult_SUCCESS.Enum(),
 			})
@@ -829,7 +1137,7 @@ func TestProcessCatchupEventMultiPageRealDB(t *testing.T) {
 					Data:             []byte{}, // "EventA" has no data
 				})
 			}
-			mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getTransactionReceipt", ethtypes.HexBytes0xPrefix(txHash[:])).
+			mRPC.On("CallRPC", mock.Anything, mock.Anything, "eth_getTransactionReceipt", []interface{}{ethtypes.HexBytes0xPrefix(txHash[:])}).
 				Run(func(args mock.Arguments) {
 					pTxReceipt := args[1].(**TXReceiptJSONRPC)
 					*pTxReceipt = txReceipt
@@ -847,7 +1155,7 @@ func TestProcessCatchupEventMultiPageRealDB(t *testing.T) {
 	es := &eventStream{
 		bi:            bi,
 		ctx:           ctx,
-		signatureList: []tktypes.Bytes32{eventSig},
+		signatureList: []pldtypes.Bytes32{eventSig},
 		dispatch:      make(chan *eventDispatch, len(allEvents)),
 		definition: &EventStream{
 			ID: uuid.New(),
@@ -855,7 +1163,7 @@ func TestProcessCatchupEventMultiPageRealDB(t *testing.T) {
 				ABI: testABI,
 			}},
 		},
-		serializer: tktypes.JSONFormatOptions("").GetABISerializerIgnoreErrors(ctx),
+		serializer: pldtypes.JSONFormatOptions("").GetABISerializerIgnoreErrors(ctx),
 	}
 
 	go func() {
@@ -904,8 +1212,8 @@ func TestEventSourcesHashing(t *testing.T) {
 		Name:   "goPurple",
 		Inputs: abi.ParameterArray{},
 	}
-	address1 := tktypes.RandAddress()
-	address2 := tktypes.RandAddress()
+	address1 := pldtypes.RandAddress()
+	address2 := pldtypes.RandAddress()
 
 	mustHash := func(ess EventSources) string {
 		hash, err := ess.Hash(context.Background())
@@ -936,4 +1244,48 @@ func TestEventSourcesHashing(t *testing.T) {
 	_, err := ess.Hash(context.Background())
 	assert.Regexp(t, "FF22025", err)
 
+}
+
+func TestNOTXHandler(t *testing.T) {
+	ctx, bi, _, p, done := newMockBlockIndexer(t, &pldconf.BlockIndexerConfig{})
+	defer done()
+
+	p.Mock.ExpectQuery("SELECT.*event_streams").WillReturnRows(p.Mock.NewRows([]string{}))
+	p.Mock.ExpectExec("INSERT.*event_streams").WillReturnResult(sqlmock.NewResult(1, 1))
+	p.Mock.ExpectExec("INSERT.*event_stream_checkpoints").WillReturnResult(driver.ResultNoRows)
+	returnErr := true
+
+	definition, err := bi.AddEventStream(ctx, bi.persistence.NOTX(), &InternalEventStream{
+		Type: IESTypeEventStreamNOTX,
+		Definition: &EventStream{
+			ID:   uuid.New(),
+			Name: "es",
+			Sources: []EventStreamSource{{
+				ABI: testABI,
+			}},
+		},
+		HandlerNOTX: func(_ context.Context, _ *EventDeliveryBatch) error {
+			if returnErr {
+				returnErr = false
+				return errors.New("pop")
+			}
+			return nil
+		},
+	})
+
+	require.NoError(t, err)
+
+	es := bi.eventStreams[definition.ID]
+	es.ctx = ctx
+
+	err = es.runBatch(&eventBatch{})
+	assert.NoError(t, err)
+	assert.False(t, returnErr)
+}
+
+func testTimeout(t *testing.T) time.Duration {
+	if deadline, hasDeadline := t.Deadline(); hasDeadline {
+		return time.Until(deadline) - time.Second // Subtract a small buffer to ensure test cleanup
+	}
+	return 30 * time.Second // Default timeout if no deadline is set
 }

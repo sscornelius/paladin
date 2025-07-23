@@ -20,10 +20,11 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/core/internal/components"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
-	"gorm.io/gorm"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"gorm.io/gorm/clause"
 )
 
@@ -31,14 +32,14 @@ type dispatchOperation struct {
 	publicDispatches     []*PublicDispatch
 	privateDispatches    []*components.ValidatedTransaction
 	localPreparedTxns    []*components.PreparedTransactionWithRefs
-	preparedReliableMsgs []*components.ReliableMessage
+	preparedReliableMsgs []*pldapi.ReliableMessage
 }
 
 type DispatchPersisted struct {
-	ID                       string             `json:"id"`
-	PrivateTransactionID     string             `json:"privateTransactionID"`
-	PublicTransactionAddress tktypes.EthAddress `json:"publicTransactionAddress"`
-	PublicTransactionID      uint64             `json:"publicTransactionID"`
+	ID                       string              `json:"id"`
+	PrivateTransactionID     string              `json:"privateTransactionID"`
+	PublicTransactionAddress pldtypes.EthAddress `json:"publicTransactionAddress"`
+	PublicTransactionID      uint64              `json:"publicTransactionID"`
 }
 
 // A dispatch sequence is a collection of private transactions that are submitted together for a given signing address in order
@@ -57,19 +58,19 @@ type DispatchBatch struct {
 
 // PersistDispatches persists the dispatches to the database and coordinates with the public transaction manager
 // to submit public transactions.
-func (s *syncPoints) PersistDispatchBatch(dCtx components.DomainContext, contractAddress tktypes.EthAddress, dispatchBatch *DispatchBatch, stateDistributions []*components.StateDistribution, preparedTxnDistributions []*components.PreparedTransactionWithRefs) error {
+func (s *syncPoints) PersistDispatchBatch(dCtx components.DomainContext, contractAddress pldtypes.EthAddress, dispatchBatch *DispatchBatch, stateDistributions []*components.StateDistribution, preparedTxnDistributions []*components.PreparedTransactionWithRefs) error {
 
-	preparedReliableMsgs := make([]*components.ReliableMessage, 0,
+	preparedReliableMsgs := make([]*pldapi.ReliableMessage, 0,
 		len(dispatchBatch.PreparedTransactions)+len(stateDistributions))
 
 	var localPreparedTxns []*components.PreparedTransactionWithRefs
 	for _, preparedTxnDistribution := range preparedTxnDistributions {
-		node, _ := tktypes.PrivateIdentityLocator(preparedTxnDistribution.Transaction.From).Node(dCtx.Ctx(), false)
+		node, _ := pldtypes.PrivateIdentityLocator(preparedTxnDistribution.Transaction.From).Node(dCtx.Ctx(), false)
 		if node != s.transportMgr.LocalNodeName() {
-			preparedReliableMsgs = append(preparedReliableMsgs, &components.ReliableMessage{
+			preparedReliableMsgs = append(preparedReliableMsgs, &pldapi.ReliableMessage{
 				Node:        node,
-				MessageType: components.RMTPreparedTransaction.Enum(),
-				Metadata:    tktypes.JSONString(preparedTxnDistribution),
+				MessageType: pldapi.RMTPreparedTransaction.Enum(),
+				Metadata:    pldtypes.JSONString(preparedTxnDistribution),
 			})
 		} else {
 			localPreparedTxns = append(localPreparedTxns, preparedTxnDistribution)
@@ -77,11 +78,11 @@ func (s *syncPoints) PersistDispatchBatch(dCtx components.DomainContext, contrac
 	}
 
 	for _, stateDistribution := range stateDistributions {
-		node, _ := tktypes.PrivateIdentityLocator(stateDistribution.IdentityLocator).Node(dCtx.Ctx(), false)
-		preparedReliableMsgs = append(preparedReliableMsgs, &components.ReliableMessage{
+		node, _ := pldtypes.PrivateIdentityLocator(stateDistribution.IdentityLocator).Node(dCtx.Ctx(), false)
+		preparedReliableMsgs = append(preparedReliableMsgs, &pldapi.ReliableMessage{
 			Node:        node,
-			MessageType: components.RMTState.Enum(),
-			Metadata:    tktypes.JSONString(stateDistribution),
+			MessageType: pldapi.RMTState.Enum(),
+			Metadata:    pldtypes.JSONString(stateDistribution),
 		})
 	}
 
@@ -116,7 +117,7 @@ func (s *syncPoints) PersistDeployDispatchBatch(ctx context.Context, dispatchBat
 	return err
 }
 
-func (s *syncPoints) writeDispatchOperations(ctx context.Context, dbTX *gorm.DB, dispatchOperations []*dispatchOperation) (postCommits []func(), err error) {
+func (s *syncPoints) writeDispatchOperations(ctx context.Context, dbTX persistence.DBTX, dispatchOperations []*dispatchOperation) (err error) {
 
 	// For each operation in the batch, we need to call the baseledger transaction manager to allocate its nonce
 	// which it can only guaranteed to be gapless and unique if it is done during the database transaction that inserts the dispatch record.
@@ -132,12 +133,11 @@ func (s *syncPoints) writeDispatchOperations(ctx context.Context, dbTX *gorm.DB,
 			}
 
 			// Call the public transaction manager persist to the database under the current transaction
-			pubTXCb, publicTxns, err := s.pubTxMgr.WriteNewTransactions(ctx, dbTX, dispatchSequenceOp.PublicTxs)
+			publicTxns, err := s.pubTxMgr.WriteNewTransactions(ctx, dbTX, dispatchSequenceOp.PublicTxs)
 			if err != nil {
 				log.L(ctx).Errorf("Error submitting public transactions: %s", err)
-				return nil, err
+				return err
 			}
-			postCommits = append(postCommits, pubTXCb)
 
 			//TODO this results in an `INSERT` for each dispatchSequence
 			//Would it be more efficient to pass an array for the whole flush?
@@ -153,7 +153,7 @@ func (s *syncPoints) writeDispatchOperations(ctx context.Context, dbTX *gorm.DB,
 
 			log.L(ctx).Debugf("Writing dispatch batch %d", len(dispatchSequenceOp.PrivateTransactionDispatches))
 
-			err = dbTX.
+			err = dbTX.DB().
 				Table("dispatches").
 				Clauses(clause.OnConflict{
 					Columns: []clause.Column{
@@ -168,29 +168,27 @@ func (s *syncPoints) writeDispatchOperations(ctx context.Context, dbTX *gorm.DB,
 
 			if err != nil {
 				log.L(ctx).Errorf("Error persisting dispatches: %s", err)
-				return nil, err
+				return err
 			}
 
 		}
 
 		if len(op.privateDispatches) > 0 {
-			txPostCommit, err := s.txMgr.UpsertInternalPrivateTxsFinalizeIDs(ctx, dbTX, op.privateDispatches)
+			err := s.txMgr.UpsertInternalPrivateTxsFinalizeIDs(ctx, dbTX, op.privateDispatches)
 			if err != nil {
 				log.L(ctx).Errorf("Error persisting private dispatches: %s", err)
-				return nil, err
+				return err
 			}
-			postCommits = append(postCommits, txPostCommit)
 		}
 
 		if len(op.localPreparedTxns) > 0 {
 			log.L(ctx).Debugf("Writing prepared transactions locally  %d", len(op.localPreparedTxns))
 
-			txPostCommit, err := s.txMgr.WritePreparedTransactions(ctx, dbTX, op.localPreparedTxns)
+			err := s.txMgr.WritePreparedTransactions(ctx, dbTX, op.localPreparedTxns)
 			if err != nil {
 				log.L(ctx).Errorf("Error persisting prepared transactions: %s", err)
-				return nil, err
+				return err
 			}
-			postCommits = append(postCommits, txPostCommit)
 		}
 
 		if len(op.preparedReliableMsgs) == 0 {
@@ -198,14 +196,13 @@ func (s *syncPoints) writeDispatchOperations(ctx context.Context, dbTX *gorm.DB,
 		} else {
 
 			log.L(ctx).Debugf("Writing %d reliable messages", len(op.preparedReliableMsgs))
-			msgPostCommit, err := s.transportMgr.SendReliable(ctx, dbTX, op.preparedReliableMsgs...)
+			err := s.transportMgr.SendReliable(ctx, dbTX, op.preparedReliableMsgs...)
 			if err != nil {
 				log.L(ctx).Errorf("Error persisting prepared reliable messages: %s", err)
-				return nil, err
+				return err
 			}
-			postCommits = append(postCommits, msgPostCommit)
 		}
 
 	}
-	return postCommits, nil
+	return nil
 }

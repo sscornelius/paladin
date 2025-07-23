@@ -23,16 +23,16 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
 	"github.com/kaleido-io/paladin/core/internal/components"
 	"github.com/kaleido-io/paladin/core/internal/filters"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
-	"gorm.io/gorm"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
 
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/query"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 )
 
 type domainContext struct {
@@ -42,7 +42,7 @@ type domainContext struct {
 	ss                 *stateManager
 	domainName         string
 	customHashFunction bool
-	contractAddress    tktypes.EthAddress
+	contractAddress    pldtypes.EthAddress
 	stateLock          sync.Mutex
 	unFlushed          *pendingStateWrites
 	flushing           *pendingStateWrites
@@ -60,7 +60,7 @@ type domainContext struct {
 }
 
 // Very important that callers Close domain contexts they open
-func (ss *stateManager) NewDomainContext(ctx context.Context, domain components.Domain, contractAddress tktypes.EthAddress) components.DomainContext {
+func (ss *stateManager) NewDomainContext(ctx context.Context, domain components.Domain, contractAddress pldtypes.EthAddress) components.DomainContext {
 	id := uuid.New()
 	log.L(ctx).Debugf("Domain context %s for domain %s contract %s closed", id, domain.Name(), contractAddress)
 
@@ -109,7 +109,7 @@ func (dc *domainContext) Ctx() context.Context {
 	return dc.Context
 }
 
-func (dc *domainContext) getUnFlushedSpends() (spending []tktypes.HexBytes, nullifiers []*pldapi.StateNullifier, nullifierIDs []tktypes.HexBytes, err error) {
+func (dc *domainContext) getUnFlushedSpends() (spending []pldtypes.HexBytes, nullifiers []*pldapi.StateNullifier, nullifierIDs []pldtypes.HexBytes, err error) {
 	// Take lock and check flush state
 	dc.stateLock.Lock()
 	defer dc.stateLock.Unlock()
@@ -126,7 +126,7 @@ func (dc *domainContext) getUnFlushedSpends() (spending []tktypes.HexBytes, null
 	if dc.flushing != nil {
 		nullifiers = append(nullifiers, dc.flushing.stateNullifiers...)
 	}
-	nullifierIDs = make([]tktypes.HexBytes, len(nullifiers))
+	nullifierIDs = make([]pldtypes.HexBytes, len(nullifiers))
 	for i, nullifier := range nullifiers {
 		nullifierIDs[i] = nullifier.ID
 	}
@@ -260,13 +260,15 @@ func (dc *domainContext) mergeInMemoryMatches(schema components.Schema, states [
 
 }
 
-func (dc *domainContext) GetStatesByID(dbTX *gorm.DB, schemaID tktypes.Bytes32, ids []string) (components.Schema, []*pldapi.State, error) {
+func (dc *domainContext) GetStatesByID(dbTX persistence.DBTX, schemaID pldtypes.Bytes32, ids []string) (components.Schema, []*pldapi.State, error) {
 	idsAny := make([]any, len(ids))
 	for i, id := range ids {
 		idsAny[i] = id
 	}
 	query := query.NewQueryBuilder().In(".id", idsAny).Sort(".created").Query()
-	schema, matches, err := dc.ss.findStates(dc, dbTX, dc.domainName, &dc.contractAddress, schemaID, query, pldapi.StateStatusAll)
+	schema, matches, err := dc.ss.findStates(dc, dbTX, dc.domainName, &dc.contractAddress, schemaID, query, &components.StateQueryOptions{
+		StatusQualifier: pldapi.StateStatusAll,
+	})
 	if err == nil {
 		var memMatches []*components.StateWithLabels
 		memMatches, err = dc.mergeUnFlushed(schema, matches, query, false /* locked states are fine */, false /* nullifiers not required */)
@@ -280,7 +282,7 @@ func (dc *domainContext) GetStatesByID(dbTX *gorm.DB, schemaID tktypes.Bytes32, 
 	return schema, matches, err
 }
 
-func (dc *domainContext) FindAvailableStates(dbTX *gorm.DB, schemaID tktypes.Bytes32, query *query.QueryJSON) (components.Schema, []*pldapi.State, error) {
+func (dc *domainContext) FindAvailableStates(dbTX persistence.DBTX, schemaID pldtypes.Bytes32, query *query.QueryJSON) (components.Schema, []*pldapi.State, error) {
 	log.L(dc.Context).Debug("domainContext:FindAvailableStates")
 	// Build a list of spending states
 	spending, _, _, err := dc.getUnFlushedSpends()
@@ -289,7 +291,10 @@ func (dc *domainContext) FindAvailableStates(dbTX *gorm.DB, schemaID tktypes.Byt
 	}
 
 	// Run the query against the DB
-	schema, states, err := dc.ss.findStates(dc, dbTX, dc.domainName, &dc.contractAddress, schemaID, query, pldapi.StateStatusAvailable, spending...)
+	schema, states, err := dc.ss.findStates(dc, dbTX, dc.domainName, &dc.contractAddress, schemaID, query, &components.StateQueryOptions{
+		StatusQualifier: pldapi.StateStatusAvailable,
+		ExcludedIDs:     spending,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -302,14 +307,14 @@ func (dc *domainContext) FindAvailableStates(dbTX *gorm.DB, schemaID tktypes.Byt
 	return schema, states, err
 }
 
-func (dc *domainContext) FindAvailableNullifiers(dbTX *gorm.DB, schemaID tktypes.Bytes32, query *query.QueryJSON) (components.Schema, []*pldapi.State, error) {
+func (dc *domainContext) FindAvailableNullifiers(dbTX persistence.DBTX, schemaID pldtypes.Bytes32, query *query.QueryJSON) (components.Schema, []*pldapi.State, error) {
 
 	// Build a list of unflushed and spending nullifiers
 	spending, nullifiers, nullifierIDs, err := dc.getUnFlushedSpends()
 	if err != nil {
 		return nil, nil, err
 	}
-	statesWithNullifiers := make([]tktypes.HexBytes, len(nullifiers))
+	statesWithNullifiers := make([]pldtypes.HexBytes, len(nullifiers))
 	for i, n := range nullifiers {
 		statesWithNullifiers[i] = n.State
 	}
@@ -325,23 +330,23 @@ func (dc *domainContext) FindAvailableNullifiers(dbTX *gorm.DB, schemaID tktypes
 	return schema, states, err
 }
 
-func (dc *domainContext) UpsertStates(dbTX *gorm.DB, stateUpserts ...*components.StateUpsert) (states []*pldapi.State, err error) {
+func (dc *domainContext) UpsertStates(dbTX persistence.DBTX, stateUpserts ...*components.StateUpsert) (states []*pldapi.State, err error) {
 	return dc.upsertStates(dbTX, false, stateUpserts...)
 }
 
-func (dc *domainContext) upsertStates(dbTX *gorm.DB, holdingLock bool, stateUpserts ...*components.StateUpsert) (states []*pldapi.State, err error) {
+func (dc *domainContext) upsertStates(dbTX persistence.DBTX, holdingLock bool, stateUpserts ...*components.StateUpsert) (states []*pldapi.State, err error) {
 
 	states = make([]*pldapi.State, len(stateUpserts))
 	stateLocks := make([]*pldapi.StateLock, 0, len(stateUpserts))
 	withValues := make([]*components.StateWithLabels, len(stateUpserts))
 	toMakeAvailable := make([]*components.StateWithLabels, 0, len(stateUpserts))
 	for i, ns := range stateUpserts {
-		schema, err := dc.ss.GetSchema(dc, dbTX, dc.domainName, ns.Schema, true)
+		schema, err := dc.ss.getSchemaByID(dc, dbTX, dc.domainName, ns.Schema, true)
 		if err != nil {
 			return nil, err
 		}
 
-		vs, err := schema.ProcessState(dc, dc.contractAddress, ns.Data, ns.ID, dc.customHashFunction)
+		vs, err := schema.ProcessState(dc, &dc.contractAddress, ns.Data, ns.ID, dc.customHashFunction)
 		if err != nil {
 			return nil, err
 		}
@@ -536,7 +541,7 @@ func (dc *domainContext) Close() {
 	delete(dc.ss.domainContexts, dc.id)
 }
 
-func (dc *domainContext) Flush(dbTX *gorm.DB) (postDBTx func(error), err error) {
+func (dc *domainContext) Flush(dbTX persistence.DBTX) error {
 	ctx := dc.Ctx()
 	log.L(ctx).Infof("Flushing context domain=%s", dc.domainName)
 
@@ -547,11 +552,11 @@ func (dc *domainContext) Flush(dbTX *gorm.DB) (postDBTx func(error), err error) 
 	if dc.flushing != nil {
 		if dc.flushing.flushResult != nil {
 			// we return the original error if the last flush error was not cleared
-			return nil, dc.flushing.flushResult
+			return dc.flushing.flushResult
 		}
 		// It is an error if we are called a second time in this function before the callback
 		// from the first call is completed/failed.
-		return nil, i18n.NewError(ctx, msgs.MsgStateFlushInProgress)
+		return i18n.NewError(ctx, msgs.MsgStateFlushInProgress)
 	}
 
 	// Sync check if there's already an error
@@ -562,7 +567,7 @@ func (dc *domainContext) Flush(dbTX *gorm.DB) (postDBTx func(error), err error) 
 	// If there's nothing to do, return a nil result
 	if dc.flushing == nil {
 		log.L(ctx).Debugf("nothing pending to flush in domain context")
-		return func(error) {}, nil
+		return nil
 	}
 
 	// Need to make sure we clean up after ourselves if we fail synchronously
@@ -574,22 +579,25 @@ func (dc *domainContext) Flush(dbTX *gorm.DB) (postDBTx func(error), err error) 
 	}()
 	syncFlushError = dc.flushing.exec(ctx, dbTX)
 	if syncFlushError != nil {
-		return nil, syncFlushError
+		return syncFlushError
 	}
 
 	// Return a callback to the owner of the DB Transaction, so they can tell us if the commit succeeded
-	return func(commitError error) {
-		dc.stateLock.Lock()
-		defer dc.stateLock.Unlock()
+	dbTX.AddFinalizer(dc.finalizer)
+	return nil
+}
 
-		if commitError != nil {
-			// The error sits on the context until a Reset() is called
-			dc.flushing.setError(commitError)
-		} else {
-			// We're ready for the next flush
-			dc.flushing = nil
-		}
-	}, nil
+func (dc *domainContext) finalizer(ctx context.Context, commitError error) {
+	dc.stateLock.Lock()
+	defer dc.stateLock.Unlock()
+
+	if dc.flushing != nil && commitError != nil {
+		// The error sits on the context until a Reset() is called
+		dc.flushing.setError(commitError)
+	} else {
+		// We're ready for the next flush
+		dc.flushing = nil
+	}
 }
 
 // MUST hold the lock to call this function
@@ -622,9 +630,9 @@ type exportSnapshot struct {
 
 // pldapi.StateLocks do not include the stateID in the serialized JSON so we need to define a new struct to include it
 type exportableStateLock struct {
-	State       tktypes.HexBytes                   `json:"stateId"`
-	Transaction uuid.UUID                          `json:"transaction"`
-	Type        tktypes.Enum[pldapi.StateLockType] `json:"type"`
+	State       pldtypes.HexBytes                   `json:"stateId"`
+	Transaction uuid.UUID                           `json:"transaction"`
+	Type        pldtypes.Enum[pldapi.StateLockType] `json:"type"`
 }
 
 // Return a snapshot of all currently known state locks as serialized JSON
@@ -670,7 +678,7 @@ func (dc *domainContext) ImportSnapshot(stateLocksJSON []byte) error {
 	}
 	dc.creatingStates = make(map[string]*components.StateWithLabels)
 	dc.txLocks = make([]*pldapi.StateLock, 0, len(snapshot.Locks))
-	if _, err = dc.upsertStates(dc.ss.p.DB(), true /* already hold lock */, snapshot.States...); err != nil {
+	if _, err = dc.upsertStates(dc.ss.p.NOTX(), true /* already hold lock */, snapshot.States...); err != nil {
 		return i18n.WrapError(dc, err, msgs.MsgDomainContextImportBadStates)
 	}
 	for _, l := range snapshot.Locks {

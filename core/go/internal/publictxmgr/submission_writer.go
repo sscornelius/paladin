@@ -20,10 +20,10 @@ import (
 
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/flushwriter"
+	"github.com/kaleido-io/paladin/core/internal/publictxmgr/metrics"
 
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
 
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -31,16 +31,18 @@ type noResult struct{}
 
 type submissionWriter struct {
 	flushwriter.Writer[*DBPubTxnSubmission, *noResult]
+	metrics metrics.PublicTransactionManagerMetrics
 }
 
-func newSubmissionWriter(bgCtx context.Context, p persistence.Persistence, conf *pldconf.PublicTxManagerConfig) *submissionWriter {
+func newSubmissionWriter(bgCtx context.Context, p persistence.Persistence, conf *pldconf.PublicTxManagerConfig, metrics metrics.PublicTransactionManagerMetrics) *submissionWriter {
 	sw := &submissionWriter{}
+	sw.metrics = metrics
 	sw.Writer = flushwriter.NewWriter(bgCtx, sw.runBatch, p, &conf.Manager.SubmissionWriter, &pldconf.PublicTxManagerDefaults.Manager.SubmissionWriter)
 	return sw
 }
 
-func (sw *submissionWriter) runBatch(ctx context.Context, tx *gorm.DB, values []*DBPubTxnSubmission) (func(error), []flushwriter.Result[*noResult], error) {
-	err := tx.
+func (sw *submissionWriter) runBatch(ctx context.Context, tx persistence.DBTX, values []*DBPubTxnSubmission) ([]flushwriter.Result[*noResult], error) {
+	err := tx.DB().
 		Table("public_submissions").
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "tx_hash"}},
@@ -49,8 +51,9 @@ func (sw *submissionWriter) runBatch(ctx context.Context, tx *gorm.DB, values []
 		Create(values).
 		Error
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	sw.metrics.IncDBSubmittedTransactionsByN(uint64(len(values)))
 	// We don't actually provide any result, so just build an array of nil results
-	return nil, make([]flushwriter.Result[*noResult], len(values)), err
+	return make([]flushwriter.Result[*noResult], len(values)), err
 }

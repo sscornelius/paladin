@@ -25,26 +25,26 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
 	"github.com/kaleido-io/paladin/core/pkg/persistence/mockpersistence"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type mockComponents struct {
-	domainManager *componentmocks.DomainManager
-	txManager     *componentmocks.TXManager
-	allComponents *componentmocks.AllComponents
+	domainManager *componentsmocks.DomainManager
+	txManager     *componentsmocks.TXManager
+	allComponents *componentsmocks.AllComponents
 }
 
 func newMockComponents(t *testing.T) *mockComponents {
 	m := &mockComponents{}
-	m.domainManager = componentmocks.NewDomainManager(t)
-	m.txManager = componentmocks.NewTXManager(t)
-	m.allComponents = componentmocks.NewAllComponents(t)
+	m.domainManager = componentsmocks.NewDomainManager(t)
+	m.txManager = componentsmocks.NewTXManager(t)
+	m.allComponents = componentsmocks.NewAllComponents(t)
 	m.allComponents.On("DomainManager").Return(m.domainManager)
 	m.allComponents.On("TxManager").Return(m.txManager)
 	return m
@@ -104,12 +104,12 @@ func TestGetTransactionStatesUnavailable(t *testing.T) {
 	defer done()
 
 	txID := uuid.New()
-	stateID1 := tktypes.HexBytes(tktypes.RandBytes(32))
-	stateID2 := tktypes.HexBytes(tktypes.RandBytes(32))
-	stateID3 := tktypes.HexBytes(tktypes.RandBytes(32))
-	stateID4 := tktypes.HexBytes(tktypes.RandBytes(32))
+	stateID1 := pldtypes.HexBytes(pldtypes.RandBytes(32))
+	stateID2 := pldtypes.HexBytes(pldtypes.RandBytes(32))
+	stateID3 := pldtypes.HexBytes(pldtypes.RandBytes(32))
+	stateID4 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 
-	err := ss.WriteStateFinalizations(ctx, ss.p.DB(),
+	err := ss.WriteStateFinalizations(ctx, ss.p.NOTX(),
 		[]*pldapi.StateSpendRecord{
 			{DomainName: "domain1", State: stateID1, Transaction: txID},
 		},
@@ -124,15 +124,15 @@ func TestGetTransactionStatesUnavailable(t *testing.T) {
 		})
 	require.NoError(t, err)
 
-	txStates, err := ss.GetTransactionStates(ctx, ss.p.DB(), txID)
+	txStates, err := ss.GetTransactionStates(ctx, ss.p.NOTX(), txID)
 	require.NoError(t, err)
 	require.Empty(t, txStates.Spent)
 	require.Empty(t, txStates.Read)
 	require.Empty(t, txStates.Confirmed)
-	require.Equal(t, []tktypes.HexBytes{stateID1}, txStates.Unavailable.Spent)
-	require.Equal(t, []tktypes.HexBytes{stateID2}, txStates.Unavailable.Read)
-	require.Equal(t, []tktypes.HexBytes{stateID3}, txStates.Unavailable.Confirmed)
-	require.Equal(t, []tktypes.HexBytes{stateID4}, txStates.Unavailable.Info)
+	require.Equal(t, []pldtypes.HexBytes{stateID1}, txStates.Unavailable.Spent)
+	require.Equal(t, []pldtypes.HexBytes{stateID2}, txStates.Unavailable.Read)
+	require.Equal(t, []pldtypes.HexBytes{stateID3}, txStates.Unavailable.Confirmed)
+	require.Equal(t, []pldtypes.HexBytes{stateID4}, txStates.Unavailable.Info)
 }
 
 func TestGetTransactionStatesFail(t *testing.T) {
@@ -142,6 +142,6 @@ func TestGetTransactionStatesFail(t *testing.T) {
 
 	db.ExpectQuery("SELECT.*states").WillReturnError(fmt.Errorf("pop"))
 
-	_, err := ss.GetTransactionStates(ctx, ss.p.DB(), uuid.New())
+	_, err := ss.GetTransactionStates(ctx, ss.p.NOTX(), uuid.New())
 	assert.Regexp(t, "pop", err)
 }

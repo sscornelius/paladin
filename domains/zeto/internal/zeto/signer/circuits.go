@@ -20,10 +20,11 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 
-	"github.com/hyperledger/firefly-common/pkg/i18n"
 	"github.com/iden3/go-rapidsnark/witness/v2"
 	"github.com/iden3/go-rapidsnark/witness/wasmer"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
 	"github.com/kaleido-io/paladin/domains/zeto/internal/msgs"
 	"github.com/kaleido-io/paladin/domains/zeto/pkg/zetosigner/zetosignerapi"
 )
@@ -57,4 +58,12 @@ func loadCircuit(ctx context.Context, circuitName string, config *zetosignerapi.
 	}
 
 	return calc, zkeyBytes, err
+}
+
+func getBatchCircuit(circuitId string) string {
+	return fmt.Sprintf("%s_batch", circuitId)
+}
+
+func IsBatchCircuit(circuitId string) bool {
+	return strings.HasSuffix(circuitId, "_batch")
 }

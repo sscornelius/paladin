@@ -21,22 +21,25 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
+	"github.com/kaleido-io/paladin/core/internal/filters"
 	"github.com/kaleido-io/paladin/core/internal/flushwriter"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/retry"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/retry"
 	"github.com/kaleido-io/paladin/toolkit/pkg/rpcserver"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 )
 
 type transportManager struct {
@@ -54,6 +57,7 @@ type transportManager struct {
 	txManager        components.TXManager
 	privateTxManager components.PrivateTxManager
 	identityResolver components.IdentityResolver
+	groupManager     components.GroupManager
 	persistence      persistence.Persistence
 
 	transportsByID   map[uuid.UUID]*transport
@@ -74,6 +78,20 @@ type transportManager struct {
 	senderBufferLen         int
 	reliableMessageResend   time.Duration
 	reliableMessagePageSize int
+}
+
+var reliableMessageFilters = filters.FieldMap{
+	"sequence":    filters.Int64Field("sequence"),
+	"id":          filters.UUIDField("id"),
+	"created":     filters.TimestampField("created"),
+	"node":        filters.StringField("node"),
+	"messageType": filters.StringField("msg_type"),
+}
+
+var reliableMessageAckFilters = filters.FieldMap{
+	"messageId": filters.UUIDField("id"),
+	"time":      filters.TimestampField("time"),
+	"error":     filters.StringField("error"),
 }
 
 func NewTransportManager(bgCtx context.Context, conf *pldconf.TransportManagerConfig) components.TransportManager {
@@ -117,6 +135,7 @@ func (tm *transportManager) PostInit(c components.AllComponents) error {
 	tm.txManager = c.TxManager()
 	tm.privateTxManager = c.PrivateTxManager()
 	tm.identityResolver = c.IdentityResolver()
+	tm.groupManager = c.GroupManager()
 	tm.persistence = c.Persistence()
 	tm.reliableMsgWriter = flushwriter.NewWriter(tm.bgCtx, tm.handleReliableMsgBatch, tm.persistence,
 		&tm.conf.ReliableMessageWriter, &pldconf.TransportManagerDefaults.ReliableMessageWriter)
@@ -277,7 +296,7 @@ func (tm *transportManager) queueFireAndForget(ctx context.Context, nodeName str
 	// use this "send" must be fault tolerant to message loss.
 	select {
 	case p.sendQueue <- msg:
-		log.L(ctx).Debugf("queued %s message %s (cid=%v) to %s", msg.MessageType, msg.MessageId, tktypes.StrOrEmpty(msg.CorrelationId), p.Name)
+		log.L(ctx).Debugf("queued %s message %s (cid=%v) to %s", msg.MessageType, msg.MessageId, pldtypes.StrOrEmpty(msg.CorrelationId), p.Name)
 		return nil
 	case <-ctx.Done():
 		return i18n.NewError(ctx, msgs.MsgContextCanceled)
@@ -286,14 +305,14 @@ func (tm *transportManager) queueFireAndForget(ctx context.Context, nodeName str
 }
 
 // See docs in components package
-func (tm *transportManager) SendReliable(ctx context.Context, dbTX *gorm.DB, msgs ...*components.ReliableMessage) (preCommit func(), err error) {
+func (tm *transportManager) SendReliable(ctx context.Context, dbTX persistence.DBTX, msgs ...*pldapi.ReliableMessage) (err error) {
 
 	peers := make(map[string]*peer)
 	for _, msg := range msgs {
 		var p *peer
 
 		msg.ID = uuid.New()
-		msg.Created = tktypes.TimestampNow()
+		msg.Created = pldtypes.TimestampNow()
 		_, err = msg.MessageType.Validate()
 
 		if err == nil {
@@ -301,46 +320,47 @@ func (tm *transportManager) SendReliable(ctx context.Context, dbTX *gorm.DB, msg
 		}
 
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		peers[p.Name] = p
 	}
 
 	if err == nil {
-		err = dbTX.
+		err = dbTX.DB().
 			WithContext(ctx).
 			Create(msgs).
 			Error
 	}
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return func() {
+	dbTX.AddPostCommit(func(ctx context.Context) {
 		for _, p := range peers {
 			p.notifyPersistedMsgAvailable()
 		}
-	}, nil
+	})
+	return nil
 
 }
 
-func (tm *transportManager) writeAcks(ctx context.Context, dbTX *gorm.DB, acks ...*components.ReliableMessageAck) error {
+func (tm *transportManager) writeAcks(ctx context.Context, dbTX persistence.DBTX, acks ...*pldapi.ReliableMessageAck) error {
 	for _, ack := range acks {
 		log.L(ctx).Infof("ack received for message %s", ack.MessageID)
-		ack.Time = tktypes.TimestampNow()
+		ack.Time = pldtypes.TimestampNow()
 	}
-	return dbTX.
+	return dbTX.DB().
 		WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(acks).
 		Error
 }
 
-func (tm *transportManager) getReliableMessageByID(ctx context.Context, dbTX *gorm.DB, id uuid.UUID) (*components.ReliableMessage, error) {
-	var rms []*components.ReliableMessage
-	err := dbTX.
+func (tm *transportManager) getReliableMessageByID(ctx context.Context, dbTX persistence.DBTX, id uuid.UUID) (*pldapi.ReliableMessage, error) {
+	var rms []*pldapi.ReliableMessage
+	err := dbTX.DB().
 		WithContext(ctx).
 		Order("sequence ASC").
 		Joins("Ack").
@@ -352,4 +372,33 @@ func (tm *transportManager) getReliableMessageByID(ctx context.Context, dbTX *go
 		return nil, err
 	}
 	return rms[0], nil
+}
+
+func (tm *transportManager) QueryReliableMessages(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.ReliableMessage, error) {
+	qw := &filters.QueryWrapper[pldapi.ReliableMessage, pldapi.ReliableMessage]{
+		P:           tm.persistence,
+		DefaultSort: "-sequence",
+		Filters:     reliableMessageFilters,
+		Query:       jq,
+		Finalize: func(db *gorm.DB) *gorm.DB {
+			return db.Joins("Ack")
+		},
+		MapResult: func(msg *pldapi.ReliableMessage) (*pldapi.ReliableMessage, error) {
+			return msg, nil
+		},
+	}
+	return qw.Run(ctx, dbTX)
+}
+
+func (tm *transportManager) QueryReliableMessageAcks(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.ReliableMessageAck, error) {
+	qw := &filters.QueryWrapper[pldapi.ReliableMessageAck, pldapi.ReliableMessageAck]{
+		P:           tm.persistence,
+		DefaultSort: "-time",
+		Filters:     reliableMessageAckFilters,
+		Query:       jq,
+		MapResult: func(ack *pldapi.ReliableMessageAck) (*pldapi.ReliableMessageAck, error) {
+			return ack, nil
+		},
+	}
+	return qw.Run(ctx, dbTX)
 }

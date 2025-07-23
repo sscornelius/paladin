@@ -22,24 +22,24 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
 	"github.com/kaleido-io/paladin/core/internal/components"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
-	"gorm.io/gorm"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
 
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/query"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 )
 
 type PrivateSmartContract struct {
-	DeployTX        uuid.UUID          `json:"deployTransaction"   gorm:"column:deploy_tx"`
-	RegistryAddress tktypes.EthAddress `json:"domainAddress"       gorm:"column:domain_address"`
-	Address         tktypes.EthAddress `json:"address"             gorm:"column:address"`
-	ConfigBytes     tktypes.HexBytes   `json:"configBytes"         gorm:"column:config_bytes"`
+	DeployTX        uuid.UUID           `json:"deployTransaction"   gorm:"column:deploy_tx"`
+	RegistryAddress pldtypes.EthAddress `json:"domainAddress"       gorm:"column:domain_address"`
+	Address         pldtypes.EthAddress `json:"address"             gorm:"column:address"`
+	ConfigBytes     pldtypes.HexBytes   `json:"configBytes"         gorm:"column:config_bytes"`
 }
 
 type domainContract struct {
@@ -111,7 +111,7 @@ func (dc *domainContract) buildTransactionSpecification(ctx context.Context, loc
 	var paramsJSON []byte
 	if err == nil {
 		// Serialize to standardized JSON before passing to domain
-		paramsJSON, err = tktypes.StandardABISerializer().SerializeJSONCtx(ctx, inputValues)
+		paramsJSON, err = pldtypes.StandardABISerializer().SerializeJSONCtx(ctx, inputValues)
 	}
 	if err != nil {
 		return nil, i18n.WrapError(ctx, err, msgs.MsgDomainInvalidFunctionParams, fnDef.SolString())
@@ -141,7 +141,7 @@ func (dc *domainContract) InitTransaction(ctx context.Context, tx *components.Pr
 	if err != nil {
 		return err
 	}
-	txSpec.TransactionId = tktypes.Bytes32UUIDFirst16(tx.ID).String()
+	txSpec.TransactionId = pldtypes.Bytes32UUIDFirst16(tx.ID).String()
 	tx.ID = *localTx.Transaction.ID
 	tx.Domain = localTx.Transaction.Domain
 	tx.Address = *localTx.Transaction.To
@@ -197,7 +197,7 @@ func (dc *domainContract) fullyQualifyAssemblyIdentities(res *prototk.AssembleTr
 	}
 }
 
-func (dc *domainContract) AssembleTransaction(dCtx components.DomainContext, readTX *gorm.DB, tx *components.PrivateTransaction, localTx *components.ResolvedTransaction) error {
+func (dc *domainContract) AssembleTransaction(dCtx components.DomainContext, readTX persistence.DBTX, tx *components.PrivateTransaction, localTx *components.ResolvedTransaction) error {
 	if tx.PreAssembly == nil || localTx.Transaction == nil || localTx.Transaction.ID == nil || *localTx.Transaction.ID != tx.ID {
 		return i18n.NewError(dCtx.Ctx(), msgs.MsgDomainTXIncompleteAssembleTransaction)
 	}
@@ -209,7 +209,7 @@ func (dc *domainContract) AssembleTransaction(dCtx components.DomainContext, rea
 	if err != nil {
 		return err
 	}
-	txSpec.TransactionId = tktypes.Bytes32UUIDFirst16(tx.ID).String()
+	txSpec.TransactionId = pldtypes.Bytes32UUIDFirst16(tx.ID).String()
 	tx.PreAssembly.TransactionSpecification = txSpec
 
 	// Clear any previous assembly state out, as it's considered completely invalid
@@ -270,7 +270,7 @@ func (dc *domainContract) AssembleTransaction(dCtx components.DomainContext, rea
 }
 
 // Happens only on the sequencing node
-func (dc *domainContract) WritePotentialStates(dCtx components.DomainContext, readTX *gorm.DB, tx *components.PrivateTransaction) (err error) {
+func (dc *domainContract) WritePotentialStates(dCtx components.DomainContext, readTX persistence.DBTX, tx *components.PrivateTransaction) (err error) {
 	if tx.PreAssembly == nil || tx.PreAssembly.TransactionSpecification == nil || tx.PostAssembly == nil {
 		return i18n.NewError(dCtx.Ctx(), msgs.MsgDomainTXIncompleteWritePotentialStates)
 	}
@@ -291,7 +291,7 @@ func (dc *domainContract) WritePotentialStates(dCtx components.DomainContext, re
 
 }
 
-func (dc *domainContract) upsertPotentialStates(dCtx components.DomainContext, readTX *gorm.DB, tx *components.PrivateTransaction, potentialStates []*prototk.NewState, isOutput bool) (writtenStates []*components.FullState, err error) {
+func (dc *domainContract) upsertPotentialStates(dCtx components.DomainContext, readTX persistence.DBTX, tx *components.PrivateTransaction, potentialStates []*prototk.NewState, isOutput bool) (writtenStates []*components.FullState, err error) {
 	newStatesToWrite := make([]*components.StateUpsert, len(potentialStates))
 	domain := dc.d
 	for i, s := range potentialStates {
@@ -302,9 +302,9 @@ func (dc *domainContract) upsertPotentialStates(dCtx components.DomainContext, r
 		if schema == nil {
 			return nil, i18n.NewError(dCtx.Ctx(), msgs.MsgDomainUnknownSchema, s.SchemaId)
 		}
-		var id tktypes.HexBytes
+		var id pldtypes.HexBytes
 		if s.Id != nil {
-			id, err = tktypes.ParseHexBytes(dCtx.Ctx(), *s.Id)
+			id, err = pldtypes.ParseHexBytes(dCtx.Ctx(), *s.Id)
 			if err != nil {
 				return nil, err
 			}
@@ -312,7 +312,7 @@ func (dc *domainContract) upsertPotentialStates(dCtx components.DomainContext, r
 		stateUpsert := &components.StateUpsert{
 			ID:     id,
 			Schema: schema.ID(),
-			Data:   tktypes.RawJSON(s.StateDataJson),
+			Data:   pldtypes.RawJSON(s.StateDataJson),
 		}
 		if isOutput {
 			// These are marked as locked and creating in the transaction, and become available for other transaction to read
@@ -344,7 +344,7 @@ func (dc *domainContract) upsertPotentialStates(dCtx components.DomainContext, r
 
 // Happens on all nodes that are aware of the transaction and want to mask input states from other
 // transactions being assembled on the same node.
-func (dc *domainContract) LockStates(dCtx components.DomainContext, readTX *gorm.DB, tx *components.PrivateTransaction) error {
+func (dc *domainContract) LockStates(dCtx components.DomainContext, readTX persistence.DBTX, tx *components.PrivateTransaction) error {
 	if tx.PreAssembly == nil || tx.PreAssembly.TransactionSpecification == nil ||
 		tx.PostAssembly == nil || tx.PostAssembly.InputStates == nil || tx.PostAssembly.OutputStates == nil {
 		return i18n.NewError(dCtx.Ctx(), msgs.MsgDomainTXIncompleteLockStates)
@@ -430,7 +430,7 @@ func (dc *domainContract) LockStates(dCtx components.DomainContext, readTX *gorm
 }
 
 // Endorse is a little special, because it returns a payload rather than updating the transaction.
-func (dc *domainContract) EndorseTransaction(dCtx components.DomainContext, readTX *gorm.DB, req *components.PrivateTransactionEndorseRequest) (*components.EndorsementResult, error) {
+func (dc *domainContract) EndorseTransaction(dCtx components.DomainContext, readTX persistence.DBTX, req *components.PrivateTransactionEndorseRequest) (*components.EndorsementResult, error) {
 
 	if req == nil ||
 		req.TransactionSpecification == nil ||
@@ -485,7 +485,7 @@ func (dc *domainContract) EndorseTransaction(dCtx components.DomainContext, read
 	}, nil
 }
 
-func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, readTX *gorm.DB, tx *components.PrivateTransaction) error {
+func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, readTX persistence.DBTX, tx *components.PrivateTransaction) error {
 	if tx.PreAssembly == nil || tx.PreAssembly.TransactionSpecification == nil ||
 		tx.PostAssembly == nil || tx.Signer == "" {
 		return i18n.NewError(dCtx.Ctx(), msgs.MsgDomainTXIncompletePrepareTransaction)
@@ -522,7 +522,7 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 
 	contractAddress := &dc.info.Address
 	if res.Transaction.ContractAddress != nil {
-		contractAddress, err = tktypes.ParseEthAddress(*res.Transaction.ContractAddress)
+		contractAddress, err = pldtypes.ParseEthAddress(*res.Transaction.ContractAddress)
 		if err != nil {
 			return err
 		}
@@ -544,7 +544,7 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 				Function:       functionABI.String(),
 				From:           tx.Signer,
 				To:             contractAddress,
-				Data:           tktypes.RawJSON(res.Transaction.ParamsJson),
+				Data:           pldtypes.RawJSON(res.Transaction.ParamsJson),
 				Domain:         psc.Domain().Name(),
 			},
 			ABI: abi.ABI{&functionABI},
@@ -556,7 +556,7 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 				Function:        functionABI.String(),
 				From:            tx.Signer,
 				To:              contractAddress,
-				Data:            tktypes.RawJSON(res.Transaction.ParamsJson),
+				Data:            pldtypes.RawJSON(res.Transaction.ParamsJson),
 				PublicTxOptions: tx.PreAssembly.PublicTxOptions,
 			},
 			ABI: abi.ABI{&functionABI},
@@ -569,7 +569,7 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 		}
 	}
 	if res.Metadata != nil {
-		tx.PreparedMetadata = tktypes.RawJSON(*res.Metadata)
+		tx.PreparedMetadata = pldtypes.RawJSON(*res.Metadata)
 	}
 	return nil
 }
@@ -593,7 +593,7 @@ func (dc *domainContract) InitCall(ctx context.Context, callTx *components.Resol
 
 }
 
-func (dc *domainContract) ExecCall(dCtx components.DomainContext, readTX *gorm.DB, callTx *components.ResolvedTransaction, verifiers []*prototk.ResolvedVerifier) (*abi.ComponentValue, error) {
+func (dc *domainContract) ExecCall(dCtx components.DomainContext, readTX persistence.DBTX, callTx *components.ResolvedTransaction, verifiers []*prototk.ResolvedVerifier) (*abi.ComponentValue, error) {
 
 	txSpec, err := dc.buildTransactionSpecification(dCtx.Ctx(), callTx, prototk.TransactionSpecification_CALL)
 	if err != nil {
@@ -635,7 +635,7 @@ func (dc *domainContract) Domain() components.Domain {
 	return dc.d
 }
 
-func (dc *domainContract) Address() tktypes.EthAddress {
+func (dc *domainContract) Address() pldtypes.EthAddress {
 	return dc.info.Address
 }
 
@@ -645,19 +645,19 @@ func (dc *domainContract) allAttestations(tx *components.PrivateTransaction) []*
 	return attestations
 }
 
-func (dc *domainContract) loadStatesFromContext(dCtx components.DomainContext, readTX *gorm.DB, refs []*prototk.StateRef) ([]*components.FullState, error) {
-	rawIDsBySchema := make(map[tktypes.Bytes32][]tktypes.RawJSON)
-	stateIDs := make([]tktypes.HexBytes, len(refs))
+func (dc *domainContract) loadStatesFromContext(dCtx components.DomainContext, readTX persistence.DBTX, refs []*prototk.StateRef) ([]*components.FullState, error) {
+	rawIDsBySchema := make(map[pldtypes.Bytes32][]pldtypes.RawJSON)
+	stateIDs := make([]pldtypes.HexBytes, len(refs))
 	for i, s := range refs {
-		stateID, err := tktypes.ParseHexBytes(dCtx.Ctx(), s.Id)
-		var schemaID tktypes.Bytes32
+		stateID, err := pldtypes.ParseHexBytes(dCtx.Ctx(), s.Id)
+		var schemaID pldtypes.Bytes32
 		if err == nil {
-			schemaID, err = tktypes.ParseBytes32(s.SchemaId)
+			schemaID, err = pldtypes.ParseBytes32(s.SchemaId)
 		}
 		if err != nil {
 			return nil, i18n.WrapError(dCtx.Ctx(), err, msgs.MsgDomainInvalidStateIDFromDomain, s.Id, i)
 		}
-		rawIDsBySchema[schemaID] = append(rawIDsBySchema[schemaID], tktypes.JSONString(stateID.String()))
+		rawIDsBySchema[schemaID] = append(rawIDsBySchema[schemaID], pldtypes.JSONString(stateID.String()))
 		stateIDs[i] = stateID
 	}
 	statesByID := make(map[string]*pldapi.State)
@@ -693,5 +693,113 @@ func (dc *domainContract) loadStatesFromContext(dCtx components.DomainContext, r
 		}
 	}
 	return states, nil
+
+}
+
+func mapPrivacyGroupToProto(stateID pldtypes.HexBytes, pg *pldapi.PrivacyGroupGenesisState) *prototk.PrivacyGroup {
+	return &prototk.PrivacyGroup{
+		Id:            stateID.String(),
+		GenesisSalt:   pg.GenesisSalt.String(),
+		Name:          pg.Name,
+		Members:       pg.Members,
+		Properties:    pg.Properties.Map(),
+		Configuration: pg.Configuration.Map(),
+	}
+}
+
+func (dc *domainContract) WrapPrivacyGroupEVMTX(ctx context.Context, pg *pldapi.PrivacyGroup, pgTX *pldapi.PrivacyGroupEVMTX) (ptx *pldapi.TransactionInput, err error) {
+
+	// We do nothing apart from type conversion here, as the domain is going to wrap this call
+	// and return the private transaction, such that it can be validated fully there.
+
+	var pToAddr *string
+	if pgTX.To != nil {
+		toAddr := pgTX.To.String()
+		pToAddr = &toAddr
+	}
+	var pGas *string
+	if pgTX.Gas != nil {
+		gasStr := pgTX.Gas.String()
+		pGas = &gasStr
+	}
+	var pValue *string
+	if pgTX.Value != nil {
+		valueStr := pgTX.Value.String()
+		pValue = &valueStr
+	}
+	var pInput *string
+	if pgTX.Input != nil {
+		inputStr := pgTX.Input.String()
+		pInput = &inputStr
+	}
+	var pABI *string
+	if pgTX.Function != nil {
+		abiStr := pldtypes.JSONString(pgTX.Function).String()
+		pABI = &abiStr
+	}
+
+	// Call the domain to do the work
+	res, err := dc.api.WrapPrivacyGroupEVMTX(ctx, &prototk.WrapPrivacyGroupEVMTXRequest{
+		PrivacyGroup: mapPrivacyGroupToProto(pg.ID, pg.GenesisStateData()),
+		Transaction: &prototk.PrivacyGroupEVMTX{
+			ContractInfo: &prototk.ContractInfo{
+				ContractAddress:    dc.info.Address.String(),
+				ContractConfigJson: dc.config.ContractConfigJson,
+			},
+			From:            pgTX.From,
+			To:              pToAddr,
+			Gas:             pGas,
+			Value:           pValue,
+			InputJson:       pInput,
+			FunctionAbiJson: pABI,
+			Bytecode:        pgTX.Bytecode,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Function returned must be private
+	if res.Transaction.Type != prototk.PreparedTransaction_PRIVATE {
+		return nil, i18n.NewError(ctx, msgs.MsgDomainInvalidPGroupTxTypeNotPrivate, res.Transaction.Type)
+	}
+
+	ptx = &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type:   pldapi.TransactionTypePrivate.Enum(),
+			Domain: dc.d.name,
+		},
+	}
+
+	pscAddr := dc.Address()
+	if res.Transaction.ContractAddress != nil {
+		addr, err := pldtypes.ParseEthAddress(*res.Transaction.ContractAddress)
+		if err != nil {
+			return nil, err
+		}
+		if *addr != pscAddr {
+			return nil, i18n.NewError(ctx, msgs.MsgDomainInvalidPGroupTxCannotRedirect, pscAddr, addr)
+		}
+	}
+	ptx.To = &pscAddr
+
+	// Always set the function definition
+	var wrappedFnABI abi.Entry
+	if err := json.Unmarshal([]byte(res.Transaction.FunctionAbiJson), &wrappedFnABI); err != nil {
+		return nil, i18n.WrapError(ctx, err, msgs.MsgDomainInvalidFunctionParams, res.Transaction.FunctionAbiJson)
+	}
+	ptx.Function = wrappedFnABI.Name
+	ptx.ABIReference = nil
+	ptx.ABI = abi.ABI{&wrappedFnABI}
+
+	// And the inputs
+	ptx.Data = pldtypes.RawJSON(res.Transaction.ParamsJson)
+
+	// Only update the signer if returned
+	if res.Transaction.RequiredSigner != nil && len(*res.Transaction.RequiredSigner) > 0 {
+		ptx.From = *res.Transaction.RequiredSigner
+	}
+
+	return ptx, nil
 
 }

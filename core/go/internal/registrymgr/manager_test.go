@@ -23,13 +23,15 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/internal/metrics"
+	"github.com/kaleido-io/paladin/core/mocks/blockindexermocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
 	"github.com/kaleido-io/paladin/core/pkg/persistence/mockpersistence"
 
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,18 +39,20 @@ import (
 type mockComponents struct {
 	noInit        bool
 	db            sqlmock.Sqlmock
-	allComponents *componentmocks.AllComponents
-	blockIndexer  *componentmocks.BlockIndexer
+	allComponents *componentsmocks.AllComponents
+	blockIndexer  *blockindexermocks.BlockIndexer
 }
 
 func newTestRegistryManager(t *testing.T, realDB bool, conf *pldconf.RegistryManagerConfig, extraSetup ...func(mc *mockComponents)) (context.Context, *registryManager, *mockComponents, func()) {
 	ctx, cancelCtx := context.WithCancel(context.Background())
+	mm := metrics.NewMetricsManager(ctx)
 
 	mc := &mockComponents{
-		blockIndexer:  componentmocks.NewBlockIndexer(t),
-		allComponents: componentmocks.NewAllComponents(t),
+		blockIndexer:  blockindexermocks.NewBlockIndexer(t),
+		allComponents: componentsmocks.NewAllComponents(t),
 	}
 	mc.allComponents.On("BlockIndexer").Return(mc.blockIndexer).Maybe()
+	mc.allComponents.On("MetricsManager").Return(mm).Maybe()
 
 	var p persistence.Persistence
 	var err error
@@ -97,7 +101,7 @@ func TestConfiguredRegistries(t *testing.T) {
 		Registries: map[string]*pldconf.RegistryConfig{
 			"test1": {
 				Plugin: pldconf.PluginConfig{
-					Type:    string(tktypes.LibraryTypeCShared),
+					Type:    string(pldtypes.LibraryTypeCShared),
 					Library: "some/where",
 				},
 			},
@@ -107,7 +111,7 @@ func TestConfiguredRegistries(t *testing.T) {
 
 	assert.Equal(t, map[string]*pldconf.PluginConfig{
 		"test1": {
-			Type:    string(tktypes.LibraryTypeCShared),
+			Type:    string(pldtypes.LibraryTypeCShared),
 			Library: "some/where",
 		},
 	}, dm.ConfiguredRegistries())

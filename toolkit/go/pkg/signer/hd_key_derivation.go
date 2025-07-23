@@ -1,5 +1,5 @@
 /*
- * Copyright © 2024 Kaleido, Inc.
+ * Copyright © 2025 Kaleido, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
  * the License. You may obtain a copy of the License at
@@ -24,11 +24,11 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/pldmsgs"
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
-	"github.com/kaleido-io/paladin/toolkit/pkg/signerapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tkmsgs"
+	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
 	"github.com/tyler-smith/go-bip39"
 )
 
@@ -41,18 +41,18 @@ type hdWalletPathEntry struct {
 	Index uint64
 }
 
-func configToKeyResolutionRequest(k *pldconf.StaticKeyReference) (string, *signerapi.ResolveKeyRequest) {
+func configToKeyResolutionRequest(k *pldconf.StaticKeyReference) (string, *prototk.ResolveKeyRequest) {
 	if k.KeyHandle != "" {
 		return k.KeyHandle, nil
 	}
-	keyReq := &signerapi.ResolveKeyRequest{
+	keyReq := &prototk.ResolveKeyRequest{
 		Name:       k.Name,
 		Index:      k.Index,
 		Attributes: k.Attributes,
-		Path:       []*signerapi.ResolveKeyPathSegment{},
+		Path:       []*prototk.ResolveKeyPathSegment{},
 	}
 	for _, p := range k.Path {
-		keyReq.Path = append(keyReq.Path, &signerapi.ResolveKeyPathSegment{
+		keyReq.Path = append(keyReq.Path, &prototk.ResolveKeyPathSegment{
 			Name:  p.Name,
 			Index: p.Index,
 		})
@@ -91,7 +91,7 @@ func (sm *signingModule[C]) initHDWallet(ctx context.Context, conf *pldconf.KeyD
 	if len(seed) != 32 {
 		seed, err = bip39.NewSeedWithErrorChecking(string(seed), "")
 		if err != nil {
-			return i18n.NewError(ctx, tkmsgs.MsgSigningHDSeedMustBe32BytesOrMnemonic)
+			return i18n.NewError(ctx, pldmsgs.MsgSigningHDSeedMustBe32BytesOrMnemonic)
 		}
 	}
 	sm.hd.hdKeyChain, err = hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
@@ -104,7 +104,7 @@ func (sm *signingModule[C]) new32ByteRandomSeed() ([]byte, error) {
 	return buff, err
 }
 
-func (hd *hdDerivation[C]) flatPathList(req *signerapi.ResolveKeyRequest) []hdWalletPathEntry {
+func (hd *hdDerivation[C]) flatPathList(req *prototk.ResolveKeyRequest) []hdWalletPathEntry {
 	ret := make([]hdWalletPathEntry, len(req.Path)+1)
 	for i, p := range req.Path {
 		ret[i] = hdWalletPathEntry{Name: p.Name, Index: p.Index}
@@ -116,7 +116,7 @@ func (hd *hdDerivation[C]) flatPathList(req *signerapi.ResolveKeyRequest) []hdWa
 	return ret
 }
 
-func (hd *hdDerivation[C]) resolveHDWalletKey(ctx context.Context, req *signerapi.ResolveKeyRequest) (res *signerapi.ResolveKeyResponse, err error) {
+func (hd *hdDerivation[C]) resolveHDWalletKey(ctx context.Context, req *prototk.ResolveKeyRequest) (res *prototk.ResolveKeyResponse, err error) {
 	keyHandle := hd.bip44Prefix
 	for i, s := range hd.flatPathList(req) {
 		var derivation uint64
@@ -135,7 +135,7 @@ func (hd *hdDerivation[C]) resolveHDWalletKey(ctx context.Context, req *signerap
 			numStr, isHardened := strings.CutSuffix(s.Name, "'")
 			ui64, err := strconv.ParseUint(numStr, 10, 64) // we use 64 bits here, but loadHDWalletPrivateKey will handle an overflow
 			if err != nil {
-				return nil, i18n.NewError(ctx, tkmsgs.MsgSignerBIP44DerivationInvalid, s.Name)
+				return nil, i18n.NewError(ctx, pldmsgs.MsgSignerBIP44DerivationInvalid, s.Name)
 			}
 			if isHardened {
 				hardenedFlag = "'"
@@ -167,7 +167,7 @@ func (hd *hdDerivation[C]) resolveHDWalletKey(ctx context.Context, req *signerap
 func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle string) (privateKey []byte, err error) {
 	segments := strings.Split(keyHandle, "/")
 	if len(segments) < 2 || segments[0] != "m" {
-		return nil, i18n.NewError(ctx, tkmsgs.MsgSignerBIP44DerivationInvalid, keyHandle)
+		return nil, i18n.NewError(ctx, pldmsgs.MsgSignerBIP44DerivationInvalid, keyHandle)
 	}
 	pos := hd.hdKeyChain
 	for _, s := range segments[1:] {
@@ -175,7 +175,7 @@ func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle
 		derivation, err := strconv.ParseUint(number, 10, 64) // we use 64bits up until the logic below
 		if err == nil {
 			if derivation >= 0x80000000 {
-				return nil, i18n.WrapError(ctx, err, tkmsgs.MsgSignerBIP32DerivationTooLarge, derivation)
+				return nil, i18n.WrapError(ctx, err, pldmsgs.MsgSignerBIP32DerivationTooLarge, derivation)
 			}
 			if isHardened {
 				derivation += 0x80000000
@@ -183,7 +183,7 @@ func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle
 			pos, err = pos.Derive(uint32(derivation))
 		}
 		if err != nil {
-			return nil, i18n.WrapError(ctx, err, tkmsgs.MsgSignerBIP44DerivationInvalid, s)
+			return nil, i18n.WrapError(ctx, err, pldmsgs.MsgSignerBIP44DerivationInvalid, s)
 		}
 	}
 	ecPrivKey, err := pos.ECPrivKey()
@@ -194,7 +194,7 @@ func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle
 	return privateKey, err
 }
 
-func (hd *hdDerivation[C]) signHDWalletKey(ctx context.Context, req *signerapi.SignRequest) (res *signerapi.SignResponse, err error) {
+func (hd *hdDerivation[C]) signHDWalletKey(ctx context.Context, req *prototk.SignWithKeyRequest) (res *prototk.SignWithKeyResponse, err error) {
 	privateKey, err := hd.loadHDWalletPrivateKey(ctx, req.KeyHandle)
 	if err != nil {
 		return nil, err

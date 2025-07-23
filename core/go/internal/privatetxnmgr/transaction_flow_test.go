@@ -24,13 +24,13 @@ import (
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/core/internal/components"
 	"github.com/kaleido-io/paladin/core/internal/privatetxnmgr/ptmgrtypes"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
-	"github.com/kaleido-io/paladin/core/mocks/privatetxnmgrmocks"
-	"github.com/kaleido-io/paladin/core/mocks/prvtxsyncpointsmocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
+	"github.com/kaleido-io/paladin/core/mocks/ptmgrtypesmocks"
+	"github.com/kaleido-io/paladin/core/mocks/syncpointsmocks"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/algorithms"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/signpayloads"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/verifiers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -38,43 +38,43 @@ import (
 )
 
 type transactionFlowDepencyMocks struct {
-	allComponents       *componentmocks.AllComponents
-	domainSmartContract *componentmocks.DomainSmartContract
-	domainContext       *componentmocks.DomainContext
-	domainMgr           *componentmocks.DomainManager
-	transportManager    *componentmocks.TransportManager
-	stateStore          *componentmocks.StateManager
-	keyManager          *componentmocks.KeyManager
-	endorsementGatherer *privatetxnmgrmocks.EndorsementGatherer
-	publisher           *privatetxnmgrmocks.Publisher
-	identityResolver    *componentmocks.IdentityResolver
-	syncPoints          *prvtxsyncpointsmocks.SyncPoints
-	transportWriter     *privatetxnmgrmocks.TransportWriter
-	environment         *privatetxnmgrmocks.SequencerEnvironment
-	coordinatorSelector *privatetxnmgrmocks.CoordinatorSelector
-	localAssembler      *privatetxnmgrmocks.LocalAssembler
+	allComponents       *componentsmocks.AllComponents
+	domainSmartContract *componentsmocks.DomainSmartContract
+	domainContext       *componentsmocks.DomainContext
+	domainMgr           *componentsmocks.DomainManager
+	transportManager    *componentsmocks.TransportManager
+	stateStore          *componentsmocks.StateManager
+	keyManager          *componentsmocks.KeyManager
+	endorsementGatherer *ptmgrtypesmocks.EndorsementGatherer
+	publisher           *ptmgrtypesmocks.Publisher
+	identityResolver    *componentsmocks.IdentityResolver
+	syncPoints          *syncpointsmocks.SyncPoints
+	transportWriter     *ptmgrtypesmocks.TransportWriter
+	environment         *ptmgrtypesmocks.SequencerEnvironment
+	coordinatorSelector *ptmgrtypesmocks.CoordinatorSelector
+	localAssembler      *ptmgrtypesmocks.LocalAssembler
 }
 
 func newTransactionFlowForTesting(t *testing.T, ctx context.Context, transaction *components.PrivateTransaction, nodeName string) (*transactionFlow, *transactionFlowDepencyMocks) {
 
 	mocks := &transactionFlowDepencyMocks{
-		allComponents:       componentmocks.NewAllComponents(t),
-		domainSmartContract: componentmocks.NewDomainSmartContract(t),
-		domainContext:       componentmocks.NewDomainContext(t),
-		domainMgr:           componentmocks.NewDomainManager(t),
-		transportManager:    componentmocks.NewTransportManager(t),
-		stateStore:          componentmocks.NewStateManager(t),
-		keyManager:          componentmocks.NewKeyManager(t),
-		endorsementGatherer: privatetxnmgrmocks.NewEndorsementGatherer(t),
-		publisher:           privatetxnmgrmocks.NewPublisher(t),
-		identityResolver:    componentmocks.NewIdentityResolver(t),
-		syncPoints:          prvtxsyncpointsmocks.NewSyncPoints(t),
-		transportWriter:     privatetxnmgrmocks.NewTransportWriter(t),
-		environment:         privatetxnmgrmocks.NewSequencerEnvironment(t),
-		coordinatorSelector: privatetxnmgrmocks.NewCoordinatorSelector(t),
-		localAssembler:      privatetxnmgrmocks.NewLocalAssembler(t),
+		allComponents:       componentsmocks.NewAllComponents(t),
+		domainSmartContract: componentsmocks.NewDomainSmartContract(t),
+		domainContext:       componentsmocks.NewDomainContext(t),
+		domainMgr:           componentsmocks.NewDomainManager(t),
+		transportManager:    componentsmocks.NewTransportManager(t),
+		stateStore:          componentsmocks.NewStateManager(t),
+		keyManager:          componentsmocks.NewKeyManager(t),
+		endorsementGatherer: ptmgrtypesmocks.NewEndorsementGatherer(t),
+		publisher:           ptmgrtypesmocks.NewPublisher(t),
+		identityResolver:    componentsmocks.NewIdentityResolver(t),
+		syncPoints:          syncpointsmocks.NewSyncPoints(t),
+		transportWriter:     ptmgrtypesmocks.NewTransportWriter(t),
+		environment:         ptmgrtypesmocks.NewSequencerEnvironment(t),
+		coordinatorSelector: ptmgrtypesmocks.NewCoordinatorSelector(t),
+		localAssembler:      ptmgrtypesmocks.NewLocalAssembler(t),
 	}
-	contractAddress := tktypes.RandAddress()
+	contractAddress := pldtypes.RandAddress()
 	mocks.allComponents.On("StateManager").Return(mocks.stateStore).Maybe()
 	mocks.allComponents.On("DomainManager").Return(mocks.domainMgr).Maybe()
 	mocks.allComponents.On("TransportManager").Return(mocks.transportManager).Maybe()
@@ -85,7 +85,7 @@ func newTransactionFlowForTesting(t *testing.T, ctx context.Context, transaction
 		CoordinatorSelection: prototk.ContractConfig_COORDINATOR_ENDORSER,
 	}).Maybe()
 
-	domain := componentmocks.NewDomain(t)
+	domain := componentsmocks.NewDomain(t)
 	domain.On("Configuration").Return(&prototk.DomainConfig{}).Maybe()
 	mocks.domainSmartContract.On("Domain").Return(domain).Maybe()
 
@@ -103,11 +103,11 @@ func TestHasOutstandingEndorsementRequestsMultipleRequestsIncomplete(t *testing.
 	ctx := context.Background()
 	newTxID := uuid.New()
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
 	testTx := &components.PrivateTransaction{
 		ID: newTxID,
@@ -173,10 +173,10 @@ func TestHasOutstandingEndorsementRequestsMultipleRequestsIncomplete(t *testing.
 					Verifier: &prototk.ResolvedVerifier{
 						Lookup:       aliceIdentityLocator,
 						Algorithm:    algorithms.ECDSA_SECP256K1,
-						Verifier:     tktypes.RandAddress().String(),
+						Verifier:     pldtypes.RandAddress().String(),
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 			},
 		},
@@ -195,11 +195,11 @@ func TestHasOutstandingEndorsementRequestsMultipleRequestsComplete(t *testing.T)
 	ctx := context.Background()
 	newTxID := uuid.New()
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 	testTx := &components.PrivateTransaction{
 		ID: newTxID,
 		PreAssembly: &components.TransactionPreAssembly{
@@ -267,7 +267,7 @@ func TestHasOutstandingEndorsementRequestsMultipleRequestsComplete(t *testing.T)
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "bar",
@@ -278,7 +278,7 @@ func TestHasOutstandingEndorsementRequestsMultipleRequestsComplete(t *testing.T)
 						Verifier:     bobVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "quz",
@@ -289,7 +289,7 @@ func TestHasOutstandingEndorsementRequestsMultipleRequestsComplete(t *testing.T)
 						Verifier:     carolVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 			},
 		},
@@ -309,11 +309,11 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesIncomplete(
 	ctx := context.Background()
 	newTxID := uuid.New()
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 	testTx := &components.PrivateTransaction{
 		ID: newTxID,
 		PreAssembly: &components.TransactionPreAssembly{
@@ -363,7 +363,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesIncomplete(
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 			},
 		},
@@ -382,11 +382,11 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesComplete(t 
 	ctx := context.Background()
 	newTxID := uuid.New()
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 	testTx := &components.PrivateTransaction{
 		ID: newTxID,
 		PreAssembly: &components.TransactionPreAssembly{
@@ -436,7 +436,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesComplete(t 
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "foo",
@@ -447,7 +447,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesComplete(t 
 						Verifier:     bobVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "foo",
@@ -458,7 +458,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesComplete(t 
 						Verifier:     carolVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 			},
 		},
@@ -475,11 +475,11 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesDuplicate(t
 	ctx := context.Background()
 	newTxID := uuid.New()
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 	testTx := &components.PrivateTransaction{
 		ID: newTxID,
 		PreAssembly: &components.TransactionPreAssembly{
@@ -529,7 +529,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesDuplicate(t
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "foo",
@@ -540,7 +540,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesDuplicate(t
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "foo",
@@ -551,7 +551,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesDuplicate(t
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 			},
 		},
@@ -568,11 +568,11 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesCompleteMix
 	ctx := context.Background()
 	newTxID := uuid.New()
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 	testTx := &components.PrivateTransaction{
 		ID: newTxID,
 		PreAssembly: &components.TransactionPreAssembly{
@@ -622,7 +622,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesCompleteMix
 						Verifier:     carolVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "foo",
@@ -633,7 +633,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesCompleteMix
 						Verifier:     aliceVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 				{
 					Name:            "foo",
@@ -644,7 +644,7 @@ func TestHasOutstandingEndorsementRequestSingleRequestMultiplePartiesCompleteMix
 						Verifier:     bobVerifier,
 						VerifierType: verifiers.ETH_ADDRESS,
 					},
-					Payload: tktypes.RandBytes(32),
+					Payload: pldtypes.RandBytes(32),
 				},
 			},
 		},
@@ -660,13 +660,13 @@ func TestRequestRemoteEndorsements(t *testing.T) {
 	newTxID := uuid.New()
 
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	// create a transaction as if we have already
 	// - resolved the verifiers
 	// - assembled it
@@ -784,13 +784,13 @@ func TestRequestLocalEndorsements(t *testing.T) {
 	sendingNodeName := "sendingNode"
 
 	aliceIdentityLocator := "alice@" + sendingNodeName
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@" + sendingNodeName
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@" + sendingNodeName
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	// create a transaction as if we have already
 	// - resolved the verifiers
 	// - assembled it
@@ -940,13 +940,13 @@ func TestTimedOutEndorsementRequest(t *testing.T) {
 	newTxID := uuid.New()
 
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	// create a transaction as if we have already
 	// - resolved the verifiers
 	// - assembled it
@@ -1102,13 +1102,13 @@ func TestEndorsementResponseAfterRevert(t *testing.T) {
 	newTxID := uuid.New()
 
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	// create a transaction as if we have already
 	// - resolved the verifiers
 	// - assembled it
@@ -1246,19 +1246,19 @@ func TestEndorsementResponseAfterReassemble(t *testing.T) {
 	newTxID := uuid.New()
 
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	// create a transaction as if we have already
 	// - resolved the verifiers
 	// - assembled it
 	// - signed it
 	// so next step is to request endorsements
-	payloadFromAssemble1 := tktypes.RandBytes(32)
+	payloadFromAssemble1 := pldtypes.RandBytes(32)
 	testTx := &components.PrivateTransaction{
 		ID:      newTxID,
 		Address: testContractAddress,
@@ -1357,7 +1357,7 @@ func TestEndorsementResponseAfterReassemble(t *testing.T) {
 	tp.Action(ctx)
 
 	//re-assemble the transaction
-	payloadFromAssemble2 := tktypes.RandBytes(32)
+	payloadFromAssemble2 := pldtypes.RandBytes(32)
 
 	tp.transaction.PostAssembly = &components.TransactionPostAssembly{
 		AttestationPlan: []*prototk.AttestationRequest{
@@ -1417,13 +1417,13 @@ func TestDuplicateEndorsementResponse(t *testing.T) {
 	senderNodeName := "senderNode"
 	senderIdentityLocator := "sender@" + senderNodeName
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node2"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	// create a transaction as if we have already:
 	// - resolved the verifiers
 	// - assembled it
@@ -1616,15 +1616,15 @@ func TestGetTxStatusPendingEndorsements(t *testing.T) {
 	senderNodeName := "senderNode"
 	senderIdentityLocator := "sender@" + senderNodeName
 	aliceIdentityLocator := "alice@node1"
-	aliceVerifier := tktypes.RandAddress().String()
+	aliceVerifier := pldtypes.RandAddress().String()
 	bobIdentityLocator := "bob@node2"
-	bobVerifier := tktypes.RandAddress().String()
+	bobVerifier := pldtypes.RandAddress().String()
 	carolIdentityLocator := "carol@node3"
-	carolVerifier := tktypes.RandAddress().String()
+	carolVerifier := pldtypes.RandAddress().String()
 	daveIdentityLocator := "dave@node4"
-	daveVerifier := tktypes.RandAddress().String()
+	daveVerifier := pldtypes.RandAddress().String()
 
-	testContractAddress := *tktypes.RandAddress()
+	testContractAddress := *pldtypes.RandAddress()
 	testTx := &components.PrivateTransaction{
 		ID:      newTxID,
 		Address: testContractAddress,
@@ -1742,7 +1742,7 @@ func TestGetTxStatusPendingEndorsements(t *testing.T) {
 			Verifier: &prototk.ResolvedVerifier{
 				Lookup:       aliceIdentityLocator,
 				Algorithm:    algorithms.ECDSA_SECP256K1,
-				Verifier:     tktypes.RandAddress().String(),
+				Verifier:     pldtypes.RandAddress().String(),
 				VerifierType: verifiers.ETH_ADDRESS,
 			},
 		},
@@ -1760,7 +1760,7 @@ func TestGetTxStatusPendingEndorsements(t *testing.T) {
 			Verifier: &prototk.ResolvedVerifier{
 				Lookup:       daveIdentityLocator,
 				Algorithm:    algorithms.ECDSA_SECP256K1,
-				Verifier:     tktypes.RandAddress().String(),
+				Verifier:     pldtypes.RandAddress().String(),
 				VerifierType: verifiers.ETH_ADDRESS,
 			},
 		},
@@ -1799,6 +1799,45 @@ func TestGetTxStatusPendingEndorsements(t *testing.T) {
 	// LatestEvent  string                       `json:"latestEvent"`
 	// LatestError  string                       `json:"latestError"`
 	// Endorsements []PrivateTxEndorsementStatus `json:"endorsements"`
+}
+
+func TestDedupResolveVerifierRequests(t *testing.T) {
+	// construct an array of resolve verifier requests
+	// with duplicates
+	// and check that we only send the unique ones
+	requests := []*prototk.ResolveVerifierRequest{
+		{
+			Lookup:       "alice@node1",
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.ETH_ADDRESS,
+		},
+		{
+			Lookup:       "bob@node2",
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.ETH_ADDRESS,
+		},
+		{
+			Lookup:       "bob@node2",
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.ETH_ADDRESS,
+		},
+		{
+			Lookup:       "carol@node3",
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.HEX_ECDSA_PUBKEY_UNCOMPRESSED,
+		},
+		{
+			Lookup:       "carol@node3",
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.ETH_ADDRESS,
+		},
+	}
+	dedup := dedupResolveVerifierRequests(requests)
+	assert.Len(t, dedup, 4)
+	assert.Equal(t, requests[0], dedup[0])
+	assert.Equal(t, requests[1], dedup[1])
+	assert.Equal(t, requests[3], dedup[2])
+	assert.Equal(t, requests[4], dedup[3])
 }
 
 type fakeClock struct {

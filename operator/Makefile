@@ -1,5 +1,7 @@
 CLUSTER_NAME ?= paladin
 NAMESPACE ?= default
+NODE_COUNT ?= 3
+MODE ?= devnet
 
 OPERATOR_IMAGE_NAME ?= paladin-operator
 OPERATOR_IMAGE_TAG ?= test
@@ -42,6 +44,7 @@ CHART_PATH_CRD = charts/paladin-operator-crd
 CHART_NAME_CRD = paladin-crds
 CHART_PATH_OPERATOR = charts/paladin-operator
 CHART_NAME_OPERATOR = paladin-ci
+VALUES_FILE ?= charts/paladin-operator/values.yaml
 
 # SHELL setup to allow bash commands
 SHELL = /usr/bin/env bash -o pipefail
@@ -127,6 +130,7 @@ kind-delete: ## Delete the Kind cluster.
 .PHONY: build
 build: manifests generate fmt vet test ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+	chmod -R u+w $(LOCALBIN)
 
 .PHONY: run 
 run: manifests generate fmt vet ## Run controller locally.
@@ -192,19 +196,23 @@ uninstall-crds: ## Uninstall CRDs.
 
 .PHONY: helm-template
 helm-template: ## Install operator using Helm.
-	$(HELM) template ${CHART_NAME_OPERATOR} ${CHART_PATH_OPERATOR} --set operator.namespace=${NAMESPACE} 
+	$(HELM) template ${CHART_NAME_OPERATOR} ${CHART_PATH_OPERATOR} --values ${VALUES_FILE} --namespace=${NAMESPACE} --set mode=${MODE}
 
 .PHONY: helm-install-dependencies
 helm-install-dependencies: ## Install operator using Helm.
-	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
+	$(HELM) repo add prometheus-community https://prometheus-community.github.io/helm-charts
+	$(HELM) repo add jetstack https://charts.jetstack.io
+	$(HELM) repo update
+	$(HELM) dependency update ${CHART_PATH_OPERATOR} || true
+	$(HELM) dependency build ${CHART_PATH_OPERATOR} || true
 	$(HELM) upgrade --install cert-manager --namespace cert-manager --version v1.16.1 jetstack/cert-manager --create-namespace --set crds.enabled=true
 
 .PHONY: helm-install
 helm-install: helm-install-dependencies ## Install operator using Helm.
-	$(HELM) dependency build ${CHART_PATH_OPERATOR} || true
 	$(HELM) upgrade --install ${CHART_NAME_OPERATOR} ${CHART_PATH_OPERATOR} \
 		-n ${NAMESPACE} --create-namespace \
-		--set operator.namespace=${NAMESPACE} \
+		--values ${VALUES_FILE} \
+		--set nodeCount=${NODE_COUNT} \
 		--set operator.image.repository=${OPERATOR_IMAGE_NAME} \
 		--set operator.image.pullPolicy=IfNotPresent \
 		--set operator.image.tag=${OPERATOR_IMAGE_TAG} \
@@ -235,7 +243,7 @@ helm-uninstall: helm-uninstall-dependencies ## Uninstall operator using Helm.
 
 .PHONY: helm-pause
 helm-pause: ## Pause the operator (set replica count to 0).
-	$(HELM) upgrade --install ${CHART_NAME_OPERATOR} ${CHART_PATH_OPERATOR} -n ${NAMESPACE} --create-namespace --set operator.namespace=${NAMESPACE} --set replicaCount=0
+	$(HELM) upgrade --install ${CHART_NAME_OPERATOR} ${CHART_PATH_OPERATOR} -n ${NAMESPACE} --create-namespace --set replicaCount=0
 
 ##@ Dependencies
 LOCALBIN ?= $(shell pwd)/bin

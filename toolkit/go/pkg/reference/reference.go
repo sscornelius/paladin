@@ -26,13 +26,13 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldclient"
-	"github.com/kaleido-io/paladin/toolkit/pkg/query"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tkmsgs"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/pldmsgs"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldclient"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"k8s.io/utils/ptr"
 )
 
@@ -96,7 +96,7 @@ var allTypes = []interface{}{
 				StateMutability: "pure",
 			},
 		},
-		Hash: tktypes.Bytes32{},
+		Hash: pldtypes.Bytes32{},
 	},
 	pldapi.State{},
 	pldapi.StateConfirmRecord{},
@@ -117,7 +117,17 @@ var allTypes = []interface{}{
 	pldapi.EventWithData{},
 	pldapi.ABIDecodedData{},
 	pldapi.PeerInfo{},
-	tktypes.JSONFormatOptions(""),
+	pldapi.KeyMappingAndVerifier{},
+	pldapi.ReliableMessageAck{},
+	pldapi.ReliableMessage{},
+	pldapi.PrivacyGroup{},
+	pldapi.PrivacyGroupEVMCall{},
+	pldapi.PrivacyGroupEVMTXInput{},
+	pldapi.PrivacyGroupInput{},
+	pldapi.PrivacyGroupMessageListener{},
+	pldapi.PrivacyGroupMessage{},
+	pldapi.PrivacyGroupMessageInput{},
+	pldtypes.JSONFormatOptions(""),
 	pldapi.StateStatusQualifier(""),
 	query.QueryJSON{
 		Limit: ptr.To(10),
@@ -129,7 +139,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field1",
 						},
-						Value: tktypes.RawJSON(`"abcde"`),
+						Value: pldtypes.RawJSON(`"abcde"`),
 					},
 					{
 						Op: query.Op{
@@ -137,7 +147,7 @@ var allTypes = []interface{}{
 							Not:             true,
 							CaseInsensitive: true,
 						},
-						Value: tktypes.RawJSON(`"abcde"`),
+						Value: pldtypes.RawJSON(`"abcde"`),
 					},
 				},
 				NEq: []*query.OpSingleVal{
@@ -145,7 +155,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field2",
 						},
-						Value: tktypes.RawJSON(`"abcde"`),
+						Value: pldtypes.RawJSON(`"abcde"`),
 					},
 				},
 				Like: []*query.OpSingleVal{
@@ -153,7 +163,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field3",
 						},
-						Value: tktypes.RawJSON(`"abcde"`),
+						Value: pldtypes.RawJSON(`"abcde"`),
 					},
 				},
 				LT: []*query.OpSingleVal{
@@ -161,7 +171,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field4",
 						},
-						Value: tktypes.RawJSON([]byte(`12345`)),
+						Value: pldtypes.RawJSON([]byte(`12345`)),
 					},
 				},
 				LTE: []*query.OpSingleVal{
@@ -169,7 +179,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field5",
 						},
-						Value: tktypes.RawJSON([]byte(`12345`)),
+						Value: pldtypes.RawJSON([]byte(`12345`)),
 					},
 				},
 				GT: []*query.OpSingleVal{
@@ -177,7 +187,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field6",
 						},
-						Value: tktypes.RawJSON([]byte(`12345`)),
+						Value: pldtypes.RawJSON([]byte(`12345`)),
 					},
 				},
 				GTE: []*query.OpSingleVal{
@@ -185,7 +195,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field7",
 						},
-						Value: tktypes.RawJSON([]byte(`12345`)),
+						Value: pldtypes.RawJSON([]byte(`12345`)),
 					},
 				},
 				In: []*query.OpMultiVal{
@@ -193,7 +203,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field8",
 						},
-						Values: []tktypes.RawJSON{[]byte(`"abcde"`), []byte(`"fghij"`)},
+						Values: []pldtypes.RawJSON{[]byte(`"abcde"`), []byte(`"fghij"`)},
 					},
 				},
 				NIn: []*query.OpMultiVal{
@@ -201,7 +211,7 @@ var allTypes = []interface{}{
 						Op: query.Op{
 							Field: "field9",
 						},
-						Values: []tktypes.RawJSON{[]byte(`"abcde"`), []byte(`"fghij"`)},
+						Values: []pldtypes.RawJSON{[]byte(`"abcde"`), []byte(`"fghij"`)},
 					},
 				},
 				Null: []*query.Op{
@@ -216,6 +226,11 @@ var allTypes = []interface{}{
 			},
 		},
 	},
+	pldapi.BlockchainEventListener{},
+	pldapi.BlockchainEventListenerOptions{},
+	pldapi.BlockchainEventListenerSource{},
+	pldapi.BlockchainEventListenerStatus{},
+	pldapi.BlockchainEventListenerCheckpoint{},
 }
 var allAPITypes = []pldclient.RPCModule{
 	pldclient.New().PTX(),
@@ -224,20 +239,21 @@ var allAPITypes = []pldclient.RPCModule{
 	pldclient.New().Transport(),
 	pldclient.New().StateStore(),
 	pldclient.New().BlockIndex(),
+	pldclient.New().PrivacyGroups(),
 }
 
 var allSimpleTypes = []interface{}{
-	tktypes.Bytes32{},
-	tktypes.HexBytes{},
-	tktypes.EthAddress{},
-	tktypes.HexUint256{},
-	tktypes.HexInt256{},
+	pldtypes.Bytes32{},
+	pldtypes.HexBytes{},
+	pldtypes.EthAddress{},
+	pldtypes.HexUint256{},
+	pldtypes.HexInt256{},
 	uuid.UUID{},
-	tktypes.HexUint64OrString(""),
-	tktypes.HexUint64(0),
-	tktypes.Timestamp(0),
-	tktypes.RawJSON([]byte{}),
-	tktypes.PrivateIdentityLocator(""),
+	pldtypes.HexUint64OrString(""),
+	pldtypes.HexUint64(0),
+	pldtypes.Timestamp(0),
+	pldtypes.RawJSON([]byte{}),
+	pldtypes.PrivateIdentityLocator(""),
 }
 
 type docGenerator struct {
@@ -279,6 +295,7 @@ func (d *docGenerator) generateMarkdownPages(ctx context.Context, types, simpleT
 
 	// have to go round twice to ensure we cross-link correctly. First to add them to the map
 	for i, o := range types {
+		fmt.Println(getType(types[i]).Name())
 		pageTitle := getType(types[i]).Name()
 		pageName := strings.ToLower(pageTitle)
 		d.addPageToMap(reflect.TypeOf(o), pageName)
@@ -504,6 +521,10 @@ func (d *docGenerator) extractParams(funcType reflect.Type, methodInfo *pldclien
 		typeName := paramType.Name()
 		if isEnum(paramType) {
 			typeName = generateEnumList(paramType)
+		} else if paramType.Kind() == reflect.Struct {
+			if _, ok := d.typeToPage[strings.ToLower(typeName)]; !ok {
+				panic(fmt.Sprintf("Missing documentation example for '%s' - add to allTypes", typeName))
+			}
 		}
 
 		// Store the parameter metadata.
@@ -663,7 +684,7 @@ func (d *docGenerator) writeStructFields(ctx context.Context, t reflect.Type, pa
 		messageKeyName := fmt.Sprintf("%s.%s", structTag, jsonFieldName)
 		description := i18n.Expand(ctx, i18n.MessageKey(messageKeyName))
 		if description == messageKeyName {
-			return tableRowCount, i18n.NewError(ctx, tkmsgs.MsgFieldDescriptionMissing, jsonFieldName, t.Name())
+			return tableRowCount, i18n.NewError(ctx, pldmsgs.MsgFieldDescriptionMissing, jsonFieldName, t.Name())
 		}
 
 		isArray := false

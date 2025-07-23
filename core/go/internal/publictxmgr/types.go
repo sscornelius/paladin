@@ -23,12 +23,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/ethsigner"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/core/pkg/ethclient"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
-
-	"github.com/hyperledger/firefly-common/pkg/fftypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 )
 
 // TXUpdates specifies a set of updates that are possible on the base structure.
@@ -36,7 +34,6 @@ import (
 // Any non-nil fields will be set.
 // Sub-objects are set as a whole, apart from TransactionHeaders where each field
 // is considered and stored individually.
-// JSONAny fields can be set explicitly to null using fftypes.NullString
 //
 // This is the update interface for the policy engine to update base status on the
 // transaction object.
@@ -47,10 +44,10 @@ type BaseTXUpdates struct {
 	InFlightStatus *InFlightStatus
 	SubStatus      *BaseTxSubStatus
 	GasPricing     *pldapi.PublicTxGasPricing
-	// GasLimit          *tktypes.HexUint64 // note this is required for some methods (eth_estimateGas)
-	TransactionHash   *tktypes.Bytes32
-	FirstSubmit       *tktypes.Timestamp
-	LastSubmit        *tktypes.Timestamp
+	// GasLimit          *pldtypes.HexUint64 // note this is required for some methods (eth_estimateGas)
+	TransactionHash   *pldtypes.Bytes32
+	FirstSubmit       *pldtypes.Timestamp
+	LastSubmit        *pldtypes.Timestamp
 	ErrorMessage      *string
 	NewSubmission     *DBPubTxnSubmission
 	FlushedSubmission *DBPubTxnSubmission
@@ -105,22 +102,9 @@ const (
 	BaseTxActionConfirmTransaction BaseTxAction = "Confirm"
 )
 
-type TransactionHeaders struct {
-	From  string            `json:"from,omitempty"`
-	To    string            `json:"to,omitempty"`
-	Nonce *fftypes.FFBigInt `json:"nonce,omitempty"`
-	Gas   *fftypes.FFBigInt `json:"gas,omitempty"`
-	Value *fftypes.FFBigInt `json:"value,omitempty"`
-}
-
 type BalanceManager interface {
-	TopUpAccount(ctx context.Context, addAccount *AddressAccount) (mtx *pldapi.PublicTx, err error)
-	IsAutoFuelingEnabled(ctx context.Context) bool
-	GetAddressBalance(ctx context.Context, address tktypes.EthAddress) (*AddressAccount, error)
-	NotifyAddressBalanceChanged(ctx context.Context, address tktypes.EthAddress)
-}
-
-type AutoFuelTransactionHandler interface {
+	GetAddressBalance(ctx context.Context, address pldtypes.EthAddress) (*AddressAccount, error)
+	NotifyAddressBalanceChanged(ctx context.Context, address pldtypes.EthAddress)
 }
 
 // AddressAccount provides the following feature:
@@ -128,7 +112,7 @@ type AutoFuelTransactionHandler interface {
 // - record the total spent of a series of transaction emitted by this signing address
 // - provide an interface to top up the signing address when spent is higher than the balance
 type AddressAccount struct {
-	Address               tktypes.EthAddress
+	Address               pldtypes.EthAddress
 	Balance               *big.Int
 	SpentTransactionCount int
 	MinCost               *big.Int
@@ -160,22 +144,6 @@ func (ab *AddressAccount) Spend(ctx context.Context, cost *big.Int) (availableTo
 func (ab *AddressAccount) GetAvailableToSpend(ctx context.Context) *big.Int {
 	balanceCopy := new(big.Int).Set(ab.Balance)
 	return balanceCopy.Sub(balanceCopy, ab.Spent)
-}
-
-type Confirmation struct {
-	BlockNumber fftypes.FFuint64 `json:"blockNumber"`
-	BlockHash   string           `json:"blockHash"`
-	ParentHash  string           `json:"parentHash"`
-}
-
-type ConfirmationsNotification struct {
-	// Confirmed marks we've reached the confirmation threshold
-	Confirmed bool
-	// NewFork is true when NewConfirmations is a complete list of confirmations.
-	// Otherwise, Confirmations is an additive delta on top of a previous list of confirmations.
-	NewFork bool
-	// Confirmations is the list of confirmations being notified - assured to be non-nil, but might be empty.
-	Confirmations []*Confirmation
 }
 
 // in flight tx stages are calculated based on a snapshot of a persisted managed transaction
@@ -254,24 +222,25 @@ const (
 )
 
 type InMemoryTxStateReadOnly interface {
-	GetCreatedTime() *tktypes.Timestamp
+	GetCreatedTime() *pldtypes.Timestamp
 	// get the transaction receipt from the in-memory state (note: the returned value should not be modified)
-	GetTransactionHash() *tktypes.Bytes32
+	GetTransactionHash() *pldtypes.Bytes32
 	GetPubTxnID() uint64
 	GetNonce() uint64
-	GetFrom() tktypes.EthAddress
-	GetTo() *tktypes.EthAddress
-	GetValue() *tktypes.HexUint256
+	GetFrom() pldtypes.EthAddress
+	GetTo() *pldtypes.EthAddress
+	GetValue() *pldtypes.HexUint256
 	BuildEthTX() *ethsigner.Transaction
 	GetGasPriceObject() *pldapi.PublicTxGasPricing
-	GetFirstSubmit() *tktypes.Timestamp
-	GetLastSubmitTime() *tktypes.Timestamp
+	GetFirstSubmit() *pldtypes.Timestamp
+	GetLastSubmitTime() *pldtypes.Timestamp
 	GetUnflushedSubmission() *DBPubTxnSubmission
 	GetInFlightStatus() InFlightStatus
 	GetSignerNonce() string
 	GetGasLimit() uint64
 	IsReadyToExit() bool
 }
+
 type InMemoryTxStateManager interface {
 	InMemoryTxStateReadOnly
 	InMemoryTxStateSetters
@@ -279,6 +248,8 @@ type InMemoryTxStateManager interface {
 
 type InMemoryTxStateSetters interface {
 	ApplyInMemoryUpdates(ctx context.Context, txUpdates *BaseTXUpdates)
+	UpdateTransaction(newPtx *DBPublicTxn)
+	ResetTransactionHash()
 }
 
 type StageOutput struct {
@@ -296,15 +267,15 @@ type StageOutput struct {
 }
 
 type SubmitOutputs struct {
-	TxHash            *tktypes.Bytes32
-	SubmissionTime    *tktypes.Timestamp
+	TxHash            *pldtypes.Bytes32
+	SubmissionTime    *pldtypes.Timestamp
 	SubmissionOutcome SubmissionOutcome
 	ErrorReason       string
 	Err               error
 }
 type SignOutputs struct {
 	SignedMessage []byte
-	TxHash        *tktypes.Bytes32
+	TxHash        *pldtypes.Bytes32
 	Err           error
 }
 
@@ -325,7 +296,7 @@ type PersistenceOutput struct {
 type InFlightStageActionTriggers interface {
 	TriggerRetrieveGasPrice(ctx context.Context) error
 	TriggerSignTx(ctx context.Context) error
-	TriggerSubmitTx(ctx context.Context, signedMessage []byte) error
+	TriggerSubmitTx(ctx context.Context, signedMessage []byte, calculatedTxHash *pldtypes.Bytes32) error
 	TriggerStatusUpdate(ctx context.Context) error
 }
 
@@ -363,7 +334,7 @@ func (ctx *RunningStageContext) SetNewPersistenceUpdateOutput() {
 }
 
 type StatusUpdater interface {
-	UpdateSubStatus(ctx context.Context, imtx InMemoryTxStateReadOnly, subStatus BaseTxSubStatus, action BaseTxAction, info *fftypes.JSONAny, err *fftypes.JSONAny, actionOccurred *tktypes.Timestamp) error
+	UpdateSubStatus(ctx context.Context, imtx InMemoryTxStateReadOnly, subStatus BaseTxSubStatus, action BaseTxAction, info pldtypes.RawJSON, err pldtypes.RawJSON, actionOccurred *pldtypes.Timestamp) error
 }
 
 type RunningStageContextPersistenceOutput struct {
@@ -374,8 +345,8 @@ type RunningStageContextPersistenceOutput struct {
 	StatusUpdates []func(p StatusUpdater) error
 }
 
-func (sOut *RunningStageContextPersistenceOutput) UpdateSubStatus(action BaseTxAction, info *fftypes.JSONAny, err *fftypes.JSONAny) {
-	actionOccurred := tktypes.TimestampNow()
+func (sOut *RunningStageContextPersistenceOutput) UpdateSubStatus(action BaseTxAction, info pldtypes.RawJSON, err pldtypes.RawJSON) {
+	actionOccurred := pldtypes.TimestampNow()
 	sOut.StatusUpdates = append(sOut.StatusUpdates, func(p StatusUpdater) error {
 		return p.UpdateSubStatus(sOut.Ctx, sOut.InMemoryTx, sOut.SubStatus, action, info, err, &actionOccurred)
 	})
@@ -390,20 +361,37 @@ type OrchestratorContext struct {
 // output of some stages doesn't get written into the database
 // so it needs to be carried over to next stages
 type TransientPreviousStageOutputs struct {
-	SignedMessage []byte // NB: if the value is nil when triggering submitTx , node signer will be used to sign the transaction instead, don't use this to judge whether a transaction can be submitted or not.
+	SignedMessage   []byte // NB: if the value is nil when triggering submitTx , node signer will be used to sign the transaction instead, don't use this to judge whether a transaction can be submitted or not.
+	TransactionHash *pldtypes.Bytes32
 }
 
 type InFlightTransactionStateManager interface {
 	// tx state management
 	InMemoryTxStateReadOnly
+	InMemoryTxStateSetters
 	CanSubmit(ctx context.Context, cost *big.Int) bool
 	CanBeRemoved(ctx context.Context) bool
 	GetInFlightStatus() InFlightStatus
+	SetOrchestratorContext(ctx context.Context, tec *OrchestratorContext)
+	GetStage(ctx context.Context) InFlightTxStage
+
+	// genereation management
+	GetGenerations(ctx context.Context) []InFlightTransactionStateGeneration
+	GetGeneration(ctx context.Context, id int) InFlightTransactionStateGeneration
+	GetCurrentGeneration(ctx context.Context) InFlightTransactionStateGeneration
+	GetPreviousGenerations(ctx context.Context) []InFlightTransactionStateGeneration
+	NewGeneration(ctx context.Context)
+}
+
+type InFlightTransactionStateGeneration interface {
+	Cancel(ctx context.Context)
+	IsCancelled(ctx context.Context) bool
+	SetCurrent(ctx context.Context, current bool)
+	IsCurrent(ctx context.Context) bool
 
 	// stage management
-	StartNewStageContext(ctx context.Context, stage InFlightTxStage, substatus BaseTxSubStatus)
+	StartNewStageContext(ctx context.Context, stageType InFlightTxStage, substatus BaseTxSubStatus)
 	GetStage(ctx context.Context) InFlightTxStage
-	SetOrchestratorContext(ctx context.Context, tec *OrchestratorContext)
 	SetTransientPreviousStageOutputs(tpso *TransientPreviousStageOutputs)
 	GetRunningStageContext(ctx context.Context) *RunningStageContext
 	GetStageTriggerError(ctx context.Context) error
@@ -416,8 +404,8 @@ type InFlightTransactionStateManager interface {
 	AddStageOutputs(ctx context.Context, stageOutput *StageOutput)
 	ProcessStageOutputs(ctx context.Context, processFunction func(stageOutputs []*StageOutput) (unprocessedStageOutputs []*StageOutput))
 	AddPersistenceOutput(ctx context.Context, stage InFlightTxStage, persistenceTime time.Time, err error)
-	AddSubmitOutput(ctx context.Context, txHash *tktypes.Bytes32, submissionTime *tktypes.Timestamp, submissionOutcome SubmissionOutcome, errorReason ethclient.ErrorReason, err error)
-	AddSignOutput(ctx context.Context, signedMessage []byte, txHash *tktypes.Bytes32, err error)
+	AddSubmitOutput(ctx context.Context, txHash *pldtypes.Bytes32, submissionTime *pldtypes.Timestamp, submissionOutcome SubmissionOutcome, errorReason ethclient.ErrorReason, err error)
+	AddSignOutput(ctx context.Context, signedMessage []byte, txHash *pldtypes.Bytes32, err error)
 	AddGasPriceOutput(ctx context.Context, gasPriceObject *pldapi.PublicTxGasPricing, err error)
 	AddPanicOutput(ctx context.Context, stage InFlightTxStage)
 

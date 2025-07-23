@@ -171,6 +171,11 @@ func (r *BesuReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Besu{}).
+		Owns(&appsv1.StatefulSet{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Complete(r)
 }
 
@@ -265,7 +270,7 @@ func (r *BesuReconciler) generateBesuConfigTOML(node *corev1alpha1.Besu) (string
 	tomlConfig["graphql-http-enabled"] = true
 	tomlConfig["graphql-http-host"] = localhost
 	tomlConfig["graphql-http-port"] = "8547"
-	tomlConfig["min-gas-price"] = 0
+	setIfUnset("min-gas-price", 0)
 	tomlConfig["p2p-host"] = localhost
 	tomlConfig["p2p-port"] = "30303"
 	setIfUnset("host-allowlist", []string{"*"})
@@ -531,7 +536,8 @@ func (r *BesuReconciler) createPDB(ctx context.Context, node *corev1alpha1.Besu,
 	} else if err != nil {
 		return nil, err
 	}
-	return &foundPDB, nil
+
+	return pdb, nil
 }
 
 func (r *BesuReconciler) generateStatefulSetTemplate(node *corev1alpha1.Besu, name, configSum string) *appsv1.StatefulSet {

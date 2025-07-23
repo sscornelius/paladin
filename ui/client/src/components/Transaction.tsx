@@ -1,4 +1,4 @@
-// Copyright © 2024 Kaleido, Inc.
+// Copyright © 2025 Kaleido, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -20,14 +20,15 @@ import VisibilityIcon from '@mui/icons-material/VisibilityOutlined';
 import { Box, Button, Grid2, Typography } from "@mui/material";
 import daysjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { t } from "i18next";
+import { Captions, HashIcon } from 'lucide-react';
 import { useState } from "react";
+import { useTranslation } from 'react-i18next';
+import iconLight from '../../public/paladin-icon-light.svg';
 import { PaladinTransactionsReceiptDetailsDialog } from "../dialogs/TransactionReceiptDetails";
 import { ViewDetailsDialog } from "../dialogs/ViewDetails";
 import { IPaladinTransaction, ITransaction, ITransactionReceipt } from "../interfaces";
 import { EllapsedTime } from "./EllapsedTime";
 import { Hash } from "./Hash";
-import { Captions, HashIcon } from 'lucide-react';
 
 type Props = {
   transaction: ITransaction
@@ -50,6 +51,7 @@ export const Transaction: React.FC<Props> = ({
     receiptCount > 1 ? 'atomicNumber' :
       receiptIsPrivate ? 'private' :
         'public';
+  const { t } = useTranslation();
 
   return (
     <>
@@ -59,7 +61,7 @@ export const Transaction: React.FC<Props> = ({
         marginBottom: '20px', borderRadius: '4px'
       }}>
         {receiptCount > 0 &&
-          <img src="/ui/paladin-icon-light.svg" width="40" style={{ position: 'absolute', left: '20px', bottom: '0px' }} />
+          <img src={iconLight} width="40" style={{ position: 'absolute', left: '20px', bottom: '0px' }} />
         }
         <Box sx={{ padding: '10px', paddingLeft: '20px', paddingRight: '20px', borderBottom: theme => `solid 1px ${theme.palette.divider}` }}>
           <Grid2 container direction="column" spacing={2}>
@@ -123,7 +125,7 @@ export const Transaction: React.FC<Props> = ({
         </Box>
         <Box sx={{ display: 'flex', padding: '10px', justifyContent: 'end' }}>
           <EllapsedTime timestamp={transaction.block.timestamp} />
-          <Button sx={{ marginLeft: '20px', textTransform: 'none', fontWeight: '400' }} size="small" startIcon={<VisibilityIcon />}
+          <Button sx={{ marginLeft: '20px', fontWeight: '400' }} size="small" startIcon={<VisibilityIcon />}
             onClick={() => setViewDetailsDialogOpen(true)}>{t('viewDetails')}</Button>
         </Box>
       </Box>

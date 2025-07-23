@@ -20,13 +20,16 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
 	"github.com/kaleido-io/paladin/core/internal/domainmgr"
+	"github.com/kaleido-io/paladin/core/internal/groupmgr"
 	"github.com/kaleido-io/paladin/core/internal/identityresolver"
 	"github.com/kaleido-io/paladin/core/internal/keymanager"
+	"github.com/kaleido-io/paladin/core/internal/metrics"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
 	"github.com/kaleido-io/paladin/core/internal/plugins"
 	"github.com/kaleido-io/paladin/core/internal/privatetxnmgr"
@@ -36,13 +39,12 @@ import (
 	"github.com/kaleido-io/paladin/core/internal/transportmgr"
 	"github.com/kaleido-io/paladin/core/internal/txmgr"
 	"github.com/kaleido-io/paladin/core/pkg/blockindexer"
-
 	"github.com/kaleido-io/paladin/core/pkg/ethclient"
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/retry"
 	"github.com/kaleido-io/paladin/toolkit/pkg/httpserver"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
+	"github.com/kaleido-io/paladin/toolkit/pkg/metricsserver"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/retry"
 	"github.com/kaleido-io/paladin/toolkit/pkg/rpcserver"
 )
 
@@ -68,6 +70,8 @@ type componentManager struct {
 	persistence      persistence.Persistence
 	blockIndexer     blockindexer.BlockIndexer
 	rpcServer        rpcserver.RPCServer
+	metricsServer    metricsserver.MetricsServer
+	metricsManager   metrics.Metrics
 
 	// managers
 	stateManager     components.StateManager
@@ -79,6 +83,7 @@ type componentManager struct {
 	privateTxManager components.PrivateTxManager
 	txManager        components.TXManager
 	identityResolver components.IdentityResolver
+	groupManager     components.GroupManager
 	// managers that are not a core part of the engine, but allow Paladin to operate in an extended mode - the testbed is an example.
 	// these cannot be queried by other components (no AdditionalManagers() function on AllComponents)
 	additionalManagers []components.AdditionalManager
@@ -159,6 +164,16 @@ func (cm *componentManager) Init() (err error) {
 		cm.rpcServer, err = rpcserver.NewRPCServer(cm.bgCtx, &cm.conf.RPCServer)
 		err = cm.wrapIfErr(err, msgs.MsgComponentRPCServerInitError)
 	}
+	if err == nil {
+		cm.metricsManager = metrics.NewMetricsManager(cm.bgCtx)
+		err = cm.wrapIfErr(err, msgs.MsgComponentMetricsManagerInitError)
+	}
+	if err == nil {
+		if confutil.Bool(cm.conf.MetricsServer.Enabled, *pldconf.MetricsServerDefaults.Enabled) {
+			cm.metricsServer, err = metricsserver.NewMetricsServer(cm.bgCtx, cm.metricsManager.Registry(), &cm.conf.MetricsServer)
+			err = cm.wrapIfErr(err, msgs.MsgComponentMetricsServerInitError)
+		}
+	}
 
 	// pre-init managers
 	if err == nil {
@@ -211,6 +226,12 @@ func (cm *componentManager) Init() (err error) {
 		cm.txManager = txmgr.NewTXManager(cm.bgCtx, &cm.conf.TxManager)
 		cm.initResults["tx_manager"], err = cm.txManager.PreInit(cm)
 		err = cm.wrapIfErr(err, msgs.MsgComponentTxManagerInitError)
+	}
+
+	if err == nil {
+		cm.groupManager = groupmgr.NewGroupManager(cm.bgCtx, &cm.conf.GroupManager)
+		cm.initResults["group_manager"], err = cm.groupManager.PreInit(cm)
+		err = cm.wrapIfErr(err, msgs.MsgComponentGroupManagerInitError)
 	}
 
 	if err == nil {
@@ -274,6 +295,11 @@ func (cm *componentManager) Init() (err error) {
 	}
 
 	if err == nil {
+		err = cm.groupManager.PostInit(cm)
+		err = cm.wrapIfErr(err, msgs.MsgComponentGroupManagerInitError)
+	}
+
+	if err == nil {
 		err = cm.identityResolver.PostInit(cm)
 		err = cm.wrapIfErr(err, msgs.MsgComponentIdentityResolverInitError)
 	}
@@ -302,6 +328,9 @@ func (cm *componentManager) startBlockIndexer() (err error) {
 		_, err = cm.blockIndexer.GetBlockListenerHeight(cm.bgCtx)
 		err = cm.wrapIfErr(err, msgs.MsgComponentBlockIndexerStartError)
 	}
+	if err == nil {
+		err = cm.txManager.LoadBlockchainEventListeners()
+	}
 	return err
 }
 
@@ -319,6 +348,17 @@ func (cm *componentManager) StartManagers() (err error) {
 	err = cm.addIfStarted("eth_client", cm.ethClientFactory, err, msgs.MsgComponentEthClientStartError)
 
 	// start the managers
+	if err == nil {
+		err = cm.pluginManager.Start()
+		err = cm.addIfStarted("plugin_manager", cm.pluginManager, err, msgs.MsgComponentPluginStartError)
+	}
+
+	// Wait for signing module plugins to all start before starting the key manager
+	if err == nil {
+		err = cm.pluginManager.WaitForInit(cm.bgCtx, prototk.PluginInfo_SIGNING_MODULE)
+		err = cm.wrapIfErr(err, msgs.MsgComponentWaitPluginStartError)
+	}
+
 	if err == nil {
 		err = cm.keyManager.Start()
 		err = cm.addIfStarted("key_manager", cm.keyManager, err, msgs.MsgComponentKeyManagerStartError)
@@ -345,11 +385,6 @@ func (cm *componentManager) StartManagers() (err error) {
 	}
 
 	if err == nil {
-		err = cm.pluginManager.Start()
-		err = cm.addIfStarted("plugin_manager", cm.pluginManager, err, msgs.MsgComponentPluginStartError)
-	}
-
-	if err == nil {
 		err = cm.publicTxManager.Start()
 		err = cm.addIfStarted("public_tx_manager", cm.publicTxManager, err, msgs.MsgComponentPublicTxManagerStartError)
 	}
@@ -364,6 +399,11 @@ func (cm *componentManager) StartManagers() (err error) {
 		err = cm.addIfStarted("tx_manager", cm.txManager, err, msgs.MsgComponentTxManagerStartError)
 	}
 
+	if err == nil {
+		err = cm.groupManager.Start()
+		err = cm.addIfStarted("group_manager", cm.groupManager, err, msgs.MsgComponentGroupManagerStartError)
+	}
+
 	for _, am := range cm.additionalManagers {
 		if err == nil {
 			err = am.Start()
@@ -375,8 +415,8 @@ func (cm *componentManager) StartManagers() (err error) {
 }
 
 func (cm *componentManager) CompleteStart() error {
-	// Wait for the plugins to all start
-	err := cm.pluginManager.WaitForInit(cm.bgCtx)
+	// Wait for the domain plugins to all start
+	err := cm.pluginManager.WaitForInit(cm.bgCtx, prototk.PluginInfo_DOMAIN)
 	err = cm.wrapIfErr(err, msgs.MsgComponentWaitPluginStartError)
 
 	// then start the block indexer
@@ -400,6 +440,11 @@ func (cm *componentManager) CompleteStart() error {
 			httpEndpoint = cm.rpcServer.WSAddr().String()
 		}
 		log.L(cm.bgCtx).Infof("RPC endpoints http=%s ws=%s", httpEndpoint, wsEndpoint)
+	}
+
+	if cm.metricsServer != nil {
+		err = cm.metricsServer.Start()
+		err = cm.addIfStarted("metrics_server", cm.metricsServer, err, msgs.MsgComponentMetricsServerStartError)
 	}
 
 	log.L(cm.bgCtx).Infof("Startup complete")
@@ -524,6 +569,14 @@ func (cm *componentManager) TxManager() components.TXManager {
 	return cm.txManager
 }
 
+func (cm *componentManager) GroupManager() components.GroupManager {
+	return cm.groupManager
+}
+
 func (cm *componentManager) IdentityResolver() components.IdentityResolver {
 	return cm.identityResolver
+}
+
+func (cm *componentManager) MetricsManager() metrics.Metrics {
+	return cm.metricsManager
 }

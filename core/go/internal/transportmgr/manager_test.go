@@ -22,41 +22,43 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
-	"github.com/kaleido-io/paladin/core/internal/components"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
 	"github.com/kaleido-io/paladin/core/pkg/persistence/mockpersistence"
 	"github.com/sirupsen/logrus"
 
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type mockComponents struct {
-	c                *componentmocks.AllComponents
+	c                *componentsmocks.AllComponents
 	db               *mockpersistence.SQLMockProvider
 	p                persistence.Persistence
-	registryManager  *componentmocks.RegistryManager
-	stateManager     *componentmocks.StateManager
-	domainManager    *componentmocks.DomainManager
-	keyManager       *componentmocks.KeyManager
-	txManager        *componentmocks.TXManager
-	privateTxManager *componentmocks.PrivateTxManager
-	identityResolver *componentmocks.IdentityResolver
+	registryManager  *componentsmocks.RegistryManager
+	stateManager     *componentsmocks.StateManager
+	domainManager    *componentsmocks.DomainManager
+	keyManager       *componentsmocks.KeyManager
+	txManager        *componentsmocks.TXManager
+	privateTxManager *componentsmocks.PrivateTxManager
+	identityResolver *componentsmocks.IdentityResolver
+	groupManager     *componentsmocks.GroupManager
 }
 
 func newMockComponents(t *testing.T, realDB bool) *mockComponents {
-	mc := &mockComponents{c: componentmocks.NewAllComponents(t)}
-	mc.registryManager = componentmocks.NewRegistryManager(t)
-	mc.stateManager = componentmocks.NewStateManager(t)
-	mc.domainManager = componentmocks.NewDomainManager(t)
-	mc.keyManager = componentmocks.NewKeyManager(t)
-	mc.txManager = componentmocks.NewTXManager(t)
-	mc.privateTxManager = componentmocks.NewPrivateTxManager(t)
-	mc.identityResolver = componentmocks.NewIdentityResolver(t)
+	mc := &mockComponents{c: componentsmocks.NewAllComponents(t)}
+	mc.registryManager = componentsmocks.NewRegistryManager(t)
+	mc.stateManager = componentsmocks.NewStateManager(t)
+	mc.domainManager = componentsmocks.NewDomainManager(t)
+	mc.keyManager = componentsmocks.NewKeyManager(t)
+	mc.txManager = componentsmocks.NewTXManager(t)
+	mc.privateTxManager = componentsmocks.NewPrivateTxManager(t)
+	mc.identityResolver = componentsmocks.NewIdentityResolver(t)
+	mc.groupManager = componentsmocks.NewGroupManager(t)
 	if realDB {
 		p, cleanup, err := persistence.NewUnitTestPersistence(context.Background(), "transportmgr")
 		require.NoError(t, err)
@@ -76,6 +78,7 @@ func newMockComponents(t *testing.T, realDB bool) *mockComponents {
 	mc.c.On("TxManager").Return(mc.txManager).Maybe()
 	mc.c.On("PrivateTxManager").Return(mc.privateTxManager).Maybe()
 	mc.c.On("IdentityResolver").Return(mc.identityResolver).Maybe()
+	mc.c.On("GroupManager").Return(mc.groupManager).Maybe()
 	return mc
 }
 
@@ -124,7 +127,7 @@ func TestConfiguredTransports(t *testing.T) {
 		Transports: map[string]*pldconf.TransportConfig{
 			"test1": {
 				Plugin: pldconf.PluginConfig{
-					Type:    string(tktypes.LibraryTypeCShared),
+					Type:    string(pldtypes.LibraryTypeCShared),
 					Library: "some/where",
 				},
 			},
@@ -134,7 +137,7 @@ func TestConfiguredTransports(t *testing.T) {
 
 	assert.Equal(t, map[string]*pldconf.PluginConfig{
 		"test1": {
-			Type:    string(tktypes.LibraryTypeCShared),
+			Type:    string(pldtypes.LibraryTypeCShared),
 			Library: "some/where",
 		},
 	}, dm.ConfiguredTransports())
@@ -196,8 +199,8 @@ func TestSendReliableBadMsg(t *testing.T) {
 	ctx, tm, _, done := newTestTransport(t, false)
 	defer done()
 
-	_, err := tm.SendReliable(ctx, tm.persistence.DB(), &components.ReliableMessage{
-		MessageType: components.RMTReceipt.Enum(),
+	err := tm.SendReliable(ctx, tm.persistence.NOTX(), &pldapi.ReliableMessage{
+		MessageType: pldapi.RMTReceipt.Enum(),
 	})
 	assert.Regexp(t, "PD012015", err)
 }

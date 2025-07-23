@@ -29,18 +29,21 @@ import (
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/mocks/blockindexermocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 	"github.com/kaleido-io/paladin/core/mocks/ethclientmocks"
+	"github.com/kaleido-io/paladin/core/mocks/rpcservermocks"
 	"github.com/kaleido-io/paladin/core/pkg/blockindexer"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
 	"github.com/kaleido-io/paladin/core/pkg/persistence/mockpersistence"
 
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/rpcserver"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 func TestInitOK(t *testing.T) {
@@ -48,6 +51,7 @@ func TestInitOK(t *testing.T) {
 	l, err := net.Listen("tcp4", ":0")
 	require.NoError(t, err)
 	debugPort := l.Addr().(*net.TCPAddr).Port
+	metricsPort := 6100
 	require.NoError(t, l.Close())
 
 	// We build a config that allows us to get through init successfully, as should be possible
@@ -85,7 +89,7 @@ func TestInitOK(t *testing.T) {
 								Keys: map[string]pldconf.StaticKeyEntryConfig{
 									"seed": {
 										Encoding: "hex",
-										Inline:   tktypes.RandHex(32),
+										Inline:   pldtypes.RandHex(32),
 									},
 								},
 							},
@@ -104,9 +108,15 @@ func TestInitOK(t *testing.T) {
 				Port: confutil.P(debugPort),
 			},
 		},
+		MetricsServer: pldconf.MetricsServerConfig{
+			Enabled: confutil.P(true),
+			HTTPServerConfig: pldconf.HTTPServerConfig{
+				Port: confutil.P(metricsPort),
+			},
+		},
 	}
 
-	mockExtraManager := componentmocks.NewAdditionalManager(t)
+	mockExtraManager := componentsmocks.NewAdditionalManager(t)
 	mockExtraManager.On("Name").Return("unittest_manager")
 	mockExtraManager.On("PreInit", mock.Anything).Return(&components.ManagerInitResult{}, nil)
 	mockExtraManager.On("PostInit", mock.Anything).Return(nil)
@@ -127,6 +137,7 @@ func TestInitOK(t *testing.T) {
 	assert.NotNil(t, cm.PrivateTxManager())
 	assert.NotNil(t, cm.PublicTxManager())
 	assert.NotNil(t, cm.TxManager())
+	assert.NotNil(t, cm.GroupManager())
 	assert.NotNil(t, cm.IdentityResolver())
 
 	// Check we can send a request for a javadump - even just after init (not start)
@@ -162,57 +173,63 @@ func TestStartOK(t *testing.T) {
 	mockEthClientFactory.On("Start").Return(nil)
 	mockEthClientFactory.On("Stop").Return()
 
-	mockBlockIndexer := componentmocks.NewBlockIndexer(t)
+	mockBlockIndexer := blockindexermocks.NewBlockIndexer(t)
 	mockBlockIndexer.On("Start").Return(nil)
 	mockBlockIndexer.On("GetBlockListenerHeight", mock.Anything).Return(uint64(12345), nil)
 	mockBlockIndexer.On("RPCModule").Return(nil)
 	mockBlockIndexer.On("Stop").Return()
 
-	mockPluginManager := componentmocks.NewPluginManager(t)
+	mockPluginManager := componentsmocks.NewPluginManager(t)
 	mockPluginManager.On("Start").Return(nil)
-	mockPluginManager.On("WaitForInit", mock.Anything).Return(nil)
+	mockPluginManager.On("WaitForInit", mock.Anything, prototk.PluginInfo_SIGNING_MODULE).Return(nil)
+	mockPluginManager.On("WaitForInit", mock.Anything, prototk.PluginInfo_DOMAIN).Return(nil)
 	mockPluginManager.On("Stop").Return()
 
-	mockKeyManager := componentmocks.NewKeyManager(t)
+	mockKeyManager := componentsmocks.NewKeyManager(t)
 	mockKeyManager.On("Start").Return(nil)
 	mockKeyManager.On("Stop").Return()
 
-	mockDomainManager := componentmocks.NewDomainManager(t)
+	mockDomainManager := componentsmocks.NewDomainManager(t)
 	mockDomainManager.On("Start").Return(nil)
 	mockDomainManager.On("Stop").Return()
 
-	mockTransportManager := componentmocks.NewTransportManager(t)
+	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockTransportManager.On("Start").Return(nil)
 	mockTransportManager.On("Stop").Return()
 
-	mockRegistryManager := componentmocks.NewRegistryManager(t)
+	mockRegistryManager := componentsmocks.NewRegistryManager(t)
 	mockRegistryManager.On("Start").Return(nil)
 	mockRegistryManager.On("Stop").Return()
 
-	mockPublicTxManager := componentmocks.NewPublicTxManager(t)
+	mockPublicTxManager := componentsmocks.NewPublicTxManager(t)
 	mockPublicTxManager.On("Start").Return(nil)
 	mockPublicTxManager.On("Stop").Return()
 
-	mockPrivateTxManager := componentmocks.NewPrivateTxManager(t)
+	mockPrivateTxManager := componentsmocks.NewPrivateTxManager(t)
 	mockPrivateTxManager.On("Start").Return(nil)
 	mockPrivateTxManager.On("Stop").Return()
 
-	mockTxManager := componentmocks.NewTXManager(t)
+	mockTxManager := componentsmocks.NewTXManager(t)
 	mockTxManager.On("Start").Return(nil)
 	mockTxManager.On("Stop").Return()
+	mockTxManager.On("LoadBlockchainEventListeners").Return(nil)
 
-	mockStateManager := componentmocks.NewStateManager(t)
+	mockGroupManager := componentsmocks.NewGroupManager(t)
+	mockGroupManager.On("Start").Return(nil)
+	mockGroupManager.On("Stop").Return()
+
+	mockStateManager := componentsmocks.NewStateManager(t)
 	mockStateManager.On("Start").Return(nil)
 	mockStateManager.On("Stop").Return()
 
-	mockRPCServer := componentmocks.NewRPCServer(t)
+	mockRPCServer := rpcservermocks.NewRPCServer(t)
 	mockRPCServer.On("Start").Return(nil)
 	mockRPCServer.On("Register", mock.AnythingOfType("*rpcserver.RPCModule")).Return()
 	mockRPCServer.On("Stop").Return()
 	mockRPCServer.On("HTTPAddr").Return(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8545})
 	mockRPCServer.On("WSAddr").Return(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8546})
 
-	mockExtraManager := componentmocks.NewAdditionalManager(t)
+	mockExtraManager := componentsmocks.NewAdditionalManager(t)
 	mockExtraManager.On("Start").Return(nil)
 	mockExtraManager.On("Name").Return("unittest_manager")
 	mockExtraManager.On("Stop").Return()
@@ -237,6 +254,7 @@ func TestStartOK(t *testing.T) {
 	cm.publicTxManager = mockPublicTxManager
 	cm.privateTxManager = mockPrivateTxManager
 	cm.txManager = mockTxManager
+	cm.groupManager = mockGroupManager
 	cm.additionalManagers = append(cm.additionalManagers, mockExtraManager)
 
 	err := cm.StartManagers()
@@ -250,8 +268,8 @@ func TestStartOK(t *testing.T) {
 
 func TestBuildInternalEventStreamsPreCommitPostCommit(t *testing.T) {
 	cm := NewComponentManager(context.Background(), tempSocketFile(t), uuid.New(), &pldconf.PaladinConfig{}, nil).(*componentManager)
-	handler := func(ctx context.Context, dbTX *gorm.DB, blocks []*pldapi.IndexedBlock, transactions []*blockindexer.IndexedTransactionNotify) (blockindexer.PostCommit, error) {
-		return nil, nil
+	handler := func(ctx context.Context, dbTX persistence.DBTX, blocks []*pldapi.IndexedBlock, transactions []*blockindexer.IndexedTransactionNotify) error {
+		return nil
 	}
 	cm.initResults = map[string]*components.ManagerInitResult{
 		"utengine": {

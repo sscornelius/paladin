@@ -24,13 +24,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hyperledger/firefly-common/pkg/i18n"
-	"github.com/kaleido-io/paladin/core/internal/components"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"gorm.io/gorm/clause"
 )
 
@@ -64,7 +64,7 @@ func (p nameSortedPeers) Less(i, j int) bool { return cmp.Less(p[i].Name, p[j].N
 
 func (tm *transportManager) getPeer(ctx context.Context, nodeName string, sending bool) (*peer, error) {
 
-	if err := tktypes.ValidateSafeCharsStartEndAlphaNum(ctx, nodeName, tktypes.DefaultNameMaxLen, "node"); err != nil {
+	if err := pldtypes.ValidateSafeCharsStartEndAlphaNum(ctx, nodeName, pldtypes.DefaultNameMaxLen, "node"); err != nil {
 		return nil, i18n.WrapError(ctx, err, msgs.MsgTransportInvalidTargetNode, nodeName)
 	}
 	if nodeName == tm.localNodeName {
@@ -179,7 +179,7 @@ func (tm *transportManager) connectPeer(ctx context.Context, nodeName string, se
 			tm: tm,
 			PeerInfo: pldapi.PeerInfo{
 				Name:      nodeName,
-				Activated: tktypes.TimestampNow(),
+				Activated: pldtypes.TimestampNow(),
 			},
 			persistedMsgsAvailable: make(chan struct{}, 1),
 			sendQueue:              make(chan *prototk.PaladinMsg, tm.senderBufferLen),
@@ -259,9 +259,9 @@ func (p *peer) send(msg *prototk.PaladinMsg, reliableSeq *uint64) error {
 	err := p.tm.sendShortRetry.Do(p.ctx, func(attempt int) (retryable bool, err error) {
 		return true, p.transport.send(p.ctx, p.Name, msg)
 	})
-	log.L(p.ctx).Infof("Sent %s/%s message %s to %s (cid=%s)", msg.Component.String(), msg.MessageType, msg.MessageId, p.Name, tktypes.StrOrEmpty(msg.CorrelationId))
+	log.L(p.ctx).Infof("Sent %s/%s message %s to %s (cid=%s)", msg.Component.String(), msg.MessageType, msg.MessageId, p.Name, pldtypes.StrOrEmpty(msg.CorrelationId))
 	if err == nil {
-		now := tktypes.TimestampNow()
+		now := pldtypes.TimestampNow()
 		p.statsLock.Lock()
 		defer p.statsLock.Unlock()
 		p.Stats.LastSend = &now
@@ -278,9 +278,9 @@ func (p *peer) send(msg *prototk.PaladinMsg, reliableSeq *uint64) error {
 }
 
 func (p *peer) updateReceivedStats(msg *prototk.PaladinMsg) {
-	log.L(p.ctx).Infof("Received %s/%s message %s from %s (cid=%s)", msg.Component.String(), msg.MessageType, msg.MessageId, p.Name, tktypes.StrOrEmpty(msg.CorrelationId))
+	log.L(p.ctx).Infof("Received %s/%s message %s from %s (cid=%s)", msg.Component.String(), msg.MessageType, msg.MessageId, p.Name, pldtypes.StrOrEmpty(msg.CorrelationId))
 
-	now := tktypes.TimestampNow()
+	now := pldtypes.TimestampNow()
 	p.statsLock.Lock()
 	defer p.statsLock.Unlock()
 	p.Stats.LastReceive = &now
@@ -304,6 +304,7 @@ func (p *peer) reliableMessageScan(checkNew bool) error {
 			Order("sequence ASC").
 			Joins("Ack").
 			Where(`"Ack"."time" IS NULL`).
+			Where("node", p.Name).
 			Limit(pageSize)
 		if lastPageEnd != nil {
 			query = query.Where("sequence > ?", *lastPageEnd)
@@ -311,14 +312,14 @@ func (p *peer) reliableMessageScan(checkNew bool) error {
 			query = query.Where("sequence > ?", *p.lastDrainHWM)
 		}
 
-		var page []*components.ReliableMessage
+		var page []*pldapi.ReliableMessage
 		err := query.Find(&page).Error
 		if err != nil {
 			return err
 		}
 
 		// Process the page - building and sending the proto messages
-		if err = p.processReliableMsgPage(page); err != nil {
+		if err = p.processReliableMsgPage(p.tm.persistence.NOTX(), page); err != nil {
 			// Errors returned are retryable - for data errors the function
 			// must record those as acks with an error.
 			return err
@@ -356,7 +357,7 @@ func (p *peer) reliableMessageScan(checkNew bool) error {
 	return nil
 }
 
-func (p *peer) processReliableMsgPage(page []*components.ReliableMessage) (err error) {
+func (p *peer) processReliableMsgPage(dbTX persistence.DBTX, page []*pldapi.ReliableMessage) (err error) {
 
 	type paladinMsgWithSeq struct {
 		*prototk.PaladinMsg
@@ -365,7 +366,7 @@ func (p *peer) processReliableMsgPage(page []*components.ReliableMessage) (err e
 
 	// Build the messages
 	msgsToSend := make([]paladinMsgWithSeq, 0, len(page))
-	var errorAcks []*components.ReliableMessageAck
+	var errorAcks []*pldapi.ReliableMessageAck
 	for _, rm := range page {
 
 		// Check it's either after our HWM, or eligible for re-send
@@ -379,11 +380,14 @@ func (p *peer) processReliableMsgPage(page []*components.ReliableMessage) (err e
 		var msg *prototk.PaladinMsg
 		var errorAck error
 		switch rm.MessageType.V() {
-		case components.RMTState:
-			msg, errorAck, err = p.tm.buildStateDistributionMsg(p.ctx, p.tm.persistence.DB(), rm)
-		case components.RMTReceipt:
-			// TODO: Implement for receipt distribution
-			fallthrough
+		case pldapi.RMTState:
+			msg, errorAck, err = p.tm.buildStateDistributionMsg(p.ctx, dbTX, rm)
+		case pldapi.RMTPrivacyGroup:
+			msg, errorAck, err = p.tm.buildPrivacyGroupDistributionMsg(p.ctx, dbTX, rm)
+		case pldapi.RMTPrivacyGroupMessage:
+			msg, errorAck, err = p.tm.buildPrivacyGroupMessageMsg(p.ctx, dbTX, rm)
+		case pldapi.RMTReceipt:
+			msg, errorAck, err = p.tm.buildReceiptDistributionMsg(p.ctx, dbTX, rm)
 		default:
 			errorAck = i18n.NewError(p.ctx, msgs.MsgTransportUnsupportedReliableMsg, rm.MessageType)
 		}
@@ -392,9 +396,9 @@ func (p *peer) processReliableMsgPage(page []*components.ReliableMessage) (err e
 			return err
 		case errorAck != nil:
 			log.L(p.ctx).Errorf("Unable to send reliable message %s - writing persistent error: %s", rm.ID, errorAck)
-			errorAcks = append(errorAcks, &components.ReliableMessageAck{
+			errorAcks = append(errorAcks, &pldapi.ReliableMessageAck{
 				MessageID: rm.ID,
-				Time:      tktypes.TimestampNow(),
+				Time:      pldtypes.TimestampNow(),
 				Error:     errorAck.Error(),
 			})
 		case msg != nil:

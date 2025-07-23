@@ -20,10 +20,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 	"github.com/kaleido-io/paladin/core/pkg/persistence/mockpersistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
 	"github.com/kaleido-io/paladin/toolkit/pkg/algorithms"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/verifiers"
 	"github.com/stretchr/testify/mock"
@@ -33,9 +33,9 @@ import (
 func TestGatherEndorsementFailResolveKey(t *testing.T) {
 	ctx := context.Background()
 	mocks := &dependencyMocks{
-		domainSmartContract: componentmocks.NewDomainSmartContract(t),
-		domainContext:       componentmocks.NewDomainContext(t),
-		keyManager:          componentmocks.NewKeyManager(t),
+		domainSmartContract: componentsmocks.NewDomainSmartContract(t),
+		domainContext:       componentsmocks.NewDomainContext(t),
+		keyManager:          componentsmocks.NewKeyManager(t),
 	}
 	var err error
 	mocks.db, err = mockpersistence.NewSQLMockProvider()
@@ -55,8 +55,8 @@ func TestGatherEndorsementFailResolveKey(t *testing.T) {
 func TestGatherEndorsementFailEndorseTransaction(t *testing.T) {
 	ctx := context.Background()
 	mocks := &dependencyMocks{
-		domainSmartContract: componentmocks.NewDomainSmartContract(t),
-		keyManager:          componentmocks.NewKeyManager(t),
+		domainSmartContract: componentsmocks.NewDomainSmartContract(t),
+		keyManager:          componentsmocks.NewKeyManager(t),
 	}
 	var err error
 	mocks.db, err = mockpersistence.NewSQLMockProvider()

@@ -29,11 +29,12 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/pkg/blockindexer"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/query"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -126,7 +127,7 @@ func TestDoubleRegisterReplaces(t *testing.T) {
 
 }
 
-func randID() string { return tktypes.RandHex(32) }
+func randID() string { return pldtypes.RandHex(32) }
 
 func randInt() int64 {
 	i, _ := rand.Int(rand.Reader, big.NewInt(10^9))
@@ -135,7 +136,7 @@ func randInt() int64 {
 
 func randChainInfo() *prototk.OnChainEventLocation {
 	return &prototk.OnChainEventLocation{
-		TransactionHash: tktypes.RandHex(32),
+		TransactionHash: pldtypes.RandHex(32),
 		BlockNumber:     randInt(), TransactionIndex: randInt(), LogIndex: randInt(),
 	}
 }
@@ -143,8 +144,8 @@ func randChainInfo() *prototk.OnChainEventLocation {
 func randPropFor(id string) *prototk.RegistryProperty {
 	return &prototk.RegistryProperty{
 		EntryId:  id,
-		Name:     fmt.Sprintf("prop_%s", tktypes.RandHex(5)),
-		Value:    fmt.Sprintf("val_%s", tktypes.RandHex(5)),
+		Name:     fmt.Sprintf("prop_%s", pldtypes.RandHex(5)),
+		Value:    fmt.Sprintf("val_%s", pldtypes.RandHex(5)),
 		Active:   true,
 		Location: randChainInfo(),
 	}
@@ -172,11 +173,10 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 
 	r, err := rm.GetRegistry(ctx, "test1")
 	require.NoError(t, err)
-	db := rm.p.DB()
 
 	// Insert a root entry
 	rootEntry1 := &prototk.RegistryEntry{Id: randID(), Name: "entry1", Location: randChainInfo(), Active: true}
-	rootEntry1SysProp := newSystemPropFor(rootEntry1.Id, "$owner", tktypes.RandAddress().String())
+	rootEntry1SysProp := newSystemPropFor(rootEntry1.Id, "$owner", pldtypes.RandAddress().String())
 	rootEntry1Props1 := randPropFor(rootEntry1.Id)
 	rootEntry2 := &prototk.RegistryEntry{Id: randID(), Name: "entry2", Location: randChainInfo(), Active: true}
 	rootEntry2Props1 := randPropFor(rootEntry2.Id)
@@ -192,7 +192,7 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	assert.NotNil(t, res)
 
 	// Test getting all the entries with props
-	entries, err := r.QueryEntriesWithProps(ctx, db, "active", query.NewQueryBuilder().Limit(100).Query())
+	entries, err := r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "active", query.NewQueryBuilder().Limit(100).Query())
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
 	assert.Equal(t, rootEntry1.Id, entries[0].ID.HexString())
@@ -205,7 +205,7 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	require.Equal(t, rootEntry2Props2.Value, entries[1].Properties[rootEntry2Props2.Name])
 
 	// Test on a non-null field
-	entries, err = r.QueryEntriesWithProps(ctx, db, "active",
+	entries, err = r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "active",
 		query.NewQueryBuilder().NotNull(rootEntry2Props2.Name).Limit(100).Query(),
 	)
 	require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	require.Equal(t, rootEntry2Props2.Value, entries[0].Properties[rootEntry2Props2.Name])
 
 	// Test on an equal field
-	entries, err = r.QueryEntriesWithProps(ctx, db, "active",
+	entries, err = r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "active",
 		query.NewQueryBuilder().Equal(rootEntry1Props1.Name, rootEntry1Props1.Value).Limit(100).Query(),
 	)
 	require.NoError(t, err)
@@ -227,7 +227,7 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	require.Equal(t, rootEntry1Props1.Value, entries[0].Properties[rootEntry1Props1.Name])
 
 	// Search on the system prop
-	entries, err = r.QueryEntriesWithProps(ctx, db, "active",
+	entries, err = r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "active",
 		query.NewQueryBuilder().Equal("$owner", rootEntry1SysProp.Value).Limit(100).Query(),
 	)
 	require.NoError(t, err)
@@ -242,7 +242,7 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	assert.NotNil(t, res)
 
 	// Find children and check sorting fields
-	children, err := r.QueryEntries(ctx, db, "active", query.NewQueryBuilder().Equal(
+	children, err := r.QueryEntries(ctx, rm.p.NOTX(), "active", query.NewQueryBuilder().Equal(
 		".parentId", rootEntry1.Id,
 	).Sort("-.created", "-.updated").Limit(100).Query())
 	require.NoError(t, err)
@@ -262,14 +262,14 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	assert.NotNil(t, res)
 
 	// Check not returned from normal query
-	entries, err = r.QueryEntriesWithProps(ctx, db, "active",
+	entries, err = r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "active",
 		query.NewQueryBuilder().Null(".parentId").Limit(100).Query())
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, rootEntry1.Id, entries[0].ID.HexString())
 
 	// Check returned from cherry pick with any
-	entries, err = r.QueryEntriesWithProps(ctx, db, "any",
+	entries, err = r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "any",
 		query.NewQueryBuilder().Equal(".name", rootEntry2.Name).Limit(100).Query())
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
@@ -281,27 +281,133 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	require.Equal(t, rootEntry2Props3.Value, entries[0].Properties[rootEntry2Props3.Name])
 
 	// Check returned from cherry pick with inactive
-	entries, err = r.QueryEntriesWithProps(ctx, db, "inactive",
+	entries, err = r.QueryEntriesWithProps(ctx, rm.p.NOTX(), "inactive",
 		query.NewQueryBuilder().Equal(".id", rootEntry2.Id).Limit(100).Query())
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, rootEntry2.Id, entries[0].ID.HexString())
 
 	// Can get the complete prop set
-	allProps, err := r.GetEntryProperties(ctx, db, "any", tktypes.MustParseHexBytes(rootEntry2.Id))
+	allProps, err := r.GetEntryProperties(ctx, rm.p.NOTX(), "any", pldtypes.MustParseHexBytes(rootEntry2.Id))
 	require.NoError(t, err)
-	propsMap := filteredPropsMap(allProps, tktypes.MustParseHexBytes(rootEntry2.Id))
+	propsMap := filteredPropsMap(allProps, pldtypes.MustParseHexBytes(rootEntry2.Id))
 	require.Len(t, propsMap, 3)
 	require.Equal(t, rootEntry2Props1.Value, propsMap[rootEntry2Props1.Name])
 	require.Equal(t, rootEntry2Props2.Value, propsMap[rootEntry2Props2.Name])
 	require.Equal(t, rootEntry2Props3.Value, propsMap[rootEntry2Props3.Name])
 
 	// Can get just the inactive props set
-	allProps, err = r.GetEntryProperties(ctx, db, "inactive", tktypes.MustParseHexBytes(rootEntry2.Id))
+	allProps, err = r.GetEntryProperties(ctx, rm.p.NOTX(), "inactive", pldtypes.MustParseHexBytes(rootEntry2.Id))
 	require.NoError(t, err)
-	propsMap = filteredPropsMap(allProps, tktypes.MustParseHexBytes(rootEntry2.Id))
+	propsMap = filteredPropsMap(allProps, pldtypes.MustParseHexBytes(rootEntry2.Id))
 	require.Len(t, propsMap, 1)
 	require.Equal(t, rootEntry2Props2.Value, propsMap[rootEntry2Props2.Name])
+}
+
+func TestUpsertRegistryRecordsRealDBNameIsUniqueScopedToParentId(t *testing.T) {
+	ctx, _, tp, _, done := newTestRegistry(t, true)
+	defer done()
+
+	// Insert a root entry
+	rootId1 := randID()
+	rootId2 := randID()
+	parentId := randID()
+	parent1 := &prototk.RegistryEntry{Id: parentId, Name: "parent1", Location: randChainInfo(), Active: true}
+	rootEntry1 := &prototk.RegistryEntry{Id: rootId1, Name: "entry1", Location: randChainInfo(), Active: true, ParentId: parentId}
+	rootEntry2 := &prototk.RegistryEntry{Id: rootId2, Name: "entry1", Location: randChainInfo(), Active: true, ParentId: parentId}
+
+	upsert := &prototk.UpsertRegistryRecordsRequest{
+		Entries:    []*prototk.RegistryEntry{parent1, rootEntry1, rootEntry2},
+		Properties: []*prototk.RegistryProperty{},
+	}
+
+	// Upsert first entry
+	res, err := tp.r.UpsertRegistryRecords(ctx, upsert)
+	require.Error(t, err)
+	assert.Nil(t, res)
+	require.Error(t, err)
+	//Observed error messages:
+	//Postgres: "ERROR: duplicate key value violates unique constraint "reg_entries_name" (SQLSTATE 23505)"
+	//          "ERROR: insert or update on table \"reg_entries\" violates foreign key constraint \"reg_entries_registry_parent_id_fkey\"
+	//SQLite: "UNIQUE constraint failed: index 'reg_entries_name"
+	//pass as long as it mentions the table and a constraint
+	assert.Regexp(t, ".*constraint.*", err)
+	assert.Regexp(t, ".*reg_entries.*", err)
+}
+
+func TestUpsertRegistryRecordsRealDBSameNameAllowedForDifferentParents(t *testing.T) {
+	ctx, _, tp, _, done := newTestRegistry(t, true)
+	defer done()
+
+	// r, err := rm.GetRegistry(ctx, "test1")
+	// require.NoError(t, err)
+
+	// Insert a root entry
+	rootId1 := randID()
+	rootId2 := randID()
+	parentId := randID()
+	parentId2 := randID()
+	entry1 := &prototk.RegistryEntry{Id: rootId1, Name: "entry1", Location: randChainInfo(), Active: true, ParentId: parentId}
+	entry2 := &prototk.RegistryEntry{Id: rootId2, Name: "entry1", Location: randChainInfo(), Active: true, ParentId: parentId2}
+	parent1 := &prototk.RegistryEntry{Id: parentId, Name: "parent1", Location: randChainInfo(), Active: true}
+	parent2 := &prototk.RegistryEntry{Id: parentId2, Name: "parent2", Location: randChainInfo(), Active: true}
+
+	upsert := &prototk.UpsertRegistryRecordsRequest{
+		Entries:    []*prototk.RegistryEntry{parent1, parent2, entry1, entry2},
+		Properties: []*prototk.RegistryProperty{},
+	}
+
+	// Upsert first entry
+	_, err := tp.r.UpsertRegistryRecords(ctx, upsert)
+	require.NoError(t, err)
+
+}
+
+func TestUpsertRegistryRecordsRealDBNameSameParentDifferentNameAllowed(t *testing.T) {
+	ctx, _, tp, _, done := newTestRegistry(t, true)
+	defer done()
+
+	// Insert a root entry
+	rootId1 := randID()
+	rootId2 := randID()
+	parentId := randID()
+	parent1 := &prototk.RegistryEntry{Id: parentId, Name: "parent1", Location: randChainInfo(), Active: true}
+	rootEntry1 := &prototk.RegistryEntry{Id: rootId1, Name: "entry1", Location: randChainInfo(), Active: true, ParentId: parentId}
+	rootEntry2 := &prototk.RegistryEntry{Id: rootId2, Name: "entry2", Location: randChainInfo(), Active: true, ParentId: parentId}
+	upsert1 := &prototk.UpsertRegistryRecordsRequest{
+		Entries:    []*prototk.RegistryEntry{parent1, rootEntry1, rootEntry2},
+		Properties: []*prototk.RegistryProperty{},
+	}
+
+	// Upsert first entry
+	_, err := tp.r.UpsertRegistryRecords(ctx, upsert1)
+	require.NoError(t, err)
+
+}
+
+func TestUpsertRegistryRecordsRealDBpreventsTwoRootEntries(t *testing.T) {
+	ctx, _, tp, _, done := newTestRegistry(t, true)
+	defer done()
+
+	// Insert a root entry
+	rootId1 := randID()
+	rootId2 := randID()
+	rootEntry1 := &prototk.RegistryEntry{Id: rootId1, Name: "entry1", Location: randChainInfo(), Active: true}
+	rootEntry2 := &prototk.RegistryEntry{Id: rootId2, Name: "entry1", Location: randChainInfo(), Active: true}
+	upsert1 := &prototk.UpsertRegistryRecordsRequest{
+		Entries:    []*prototk.RegistryEntry{rootEntry1, rootEntry2},
+		Properties: []*prototk.RegistryProperty{},
+	}
+
+	// Upsert first entry
+	res, err := tp.r.UpsertRegistryRecords(ctx, upsert1)
+	require.Error(t, err)
+	assert.Nil(t, res)
+	require.Error(t, err)
+	//Observed error messages:
+	//Postgres: "ERROR: duplicate key value violates unique constraint "reg_entries_name" (SQLSTATE 23505)"
+	//SQLite: "UNIQUE constraint failed: index 'reg_entries_name"
+	assert.Regexp(t, ".*constraint.*reg_entries_name.*", err)
 }
 
 func TestUpsertRegistryRecordsInsertBadID(t *testing.T) {
@@ -416,7 +522,7 @@ func TestQueryEntriesQueryNoLimit(t *testing.T) {
 	ctx, _, tp, _, done := newTestRegistry(t, false)
 	defer done()
 
-	_, err := tp.r.QueryEntriesWithProps(ctx, tp.r.rm.p.DB(), "active", query.NewQueryBuilder().Query())
+	_, err := tp.r.QueryEntriesWithProps(ctx, tp.r.rm.p.NOTX(), "active", query.NewQueryBuilder().Query())
 	assert.Regexp(t, "PD012107", err)
 }
 
@@ -426,7 +532,7 @@ func TestQueryEntriesQueryFail(t *testing.T) {
 
 	m.db.ExpectQuery("SELECT.*reg_entries").WillReturnError(fmt.Errorf("pop"))
 
-	_, err := tp.r.QueryEntries(ctx, tp.r.rm.p.DB(), "active", query.NewQueryBuilder().Limit(100).Query())
+	_, err := tp.r.QueryEntries(ctx, tp.r.rm.p.NOTX(), "active", query.NewQueryBuilder().Limit(100).Query())
 	assert.Regexp(t, "pop", err)
 }
 
@@ -436,10 +542,10 @@ func TestGetEntryPropertiesQueryFail(t *testing.T) {
 
 	m.db.ExpectQuery("SELECT.*reg_entries").WillReturnRows(sqlmock.
 		NewRows([]string{"id"}).
-		AddRow(tktypes.HexBytes(tktypes.RandBytes(32))))
+		AddRow(pldtypes.HexBytes(pldtypes.RandBytes(32))))
 	m.db.ExpectQuery("SELECT.*reg_props").WillReturnError(fmt.Errorf("pop"))
 
-	_, err := tp.r.QueryEntriesWithProps(ctx, tp.r.rm.p.DB(), "active", query.NewQueryBuilder().Limit(100).Query())
+	_, err := tp.r.QueryEntriesWithProps(ctx, tp.r.rm.p.NOTX(), "active", query.NewQueryBuilder().Limit(100).Query())
 	assert.Regexp(t, "pop", err)
 }
 
@@ -457,11 +563,11 @@ func TestRegistryWithEventStreams(t *testing.T) {
 				},
 			},
 		}
-		addr := tktypes.RandAddress()
+		addr := pldtypes.RandAddress()
 
-		mc.blockIndexer.On("AddEventStream", mock.Anything, mock.MatchedBy(func(ies *blockindexer.InternalEventStream) bool {
+		mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.MatchedBy(func(ies *blockindexer.InternalEventStream) bool {
 			require.Len(t, ies.Definition.Sources, 1)
-			assert.JSONEq(t, tktypes.JSONString(a).String(), tktypes.JSONString(ies.Definition.Sources[0].ABI).String())
+			assert.JSONEq(t, pldtypes.JSONString(a).String(), pldtypes.JSONString(ies.Definition.Sources[0].ABI).String())
 			assert.Equal(t, addr, ies.Definition.Sources[0].Address)
 			return true
 		})).Return(es, nil)
@@ -469,7 +575,7 @@ func TestRegistryWithEventStreams(t *testing.T) {
 		regConf.EventSources = []*prototk.RegistryEventSource{
 			{
 				ContractAddress: addr.String(),
-				AbiEventsJson:   tktypes.JSONString(a).Pretty(),
+				AbiEventsJson:   pldtypes.JSONString(a).Pretty(),
 			},
 		}
 	})
@@ -490,7 +596,7 @@ func TestConfigureEventStreamBadEventABI(t *testing.T) {
 			},
 		},
 	}
-	err := tp.r.configureEventStream(ctx)
+	err := tp.r.configureEventStream(ctx, tp.r.rm.p.NOTX())
 	assert.Regexp(t, "PD012102", err)
 
 }
@@ -506,7 +612,7 @@ func TestConfigureEventStreamBadEventContractAddr(t *testing.T) {
 			},
 		},
 	}
-	err := tp.r.configureEventStream(ctx)
+	err := tp.r.configureEventStream(ctx, tp.r.rm.p.NOTX())
 	assert.Regexp(t, "PD012102", err)
 
 }
@@ -522,7 +628,7 @@ func TestConfigureEventStreamBadEventABITypes(t *testing.T) {
 			},
 		},
 	}
-	err := tp.r.configureEventStream(ctx)
+	err := tp.r.configureEventStream(ctx, tp.r.rm.p.NOTX())
 	assert.Regexp(t, "FF22025", err)
 
 }
@@ -530,7 +636,9 @@ func TestConfigureEventStreamBadEventABITypes(t *testing.T) {
 func TestHandleEventBatchOk(t *testing.T) {
 
 	ctx, _, tp, _, done := newTestRegistry(t, false, func(mc *mockComponents, conf *pldconf.RegistryManagerConfig, regConf *prototk.RegistryConfig) {
+		mc.db.ExpectBegin()
 		mc.db.ExpectExec("INSERT.*reg_entries").WillReturnResult(driver.ResultNoRows)
+		mc.db.ExpectCommit()
 	})
 	defer done()
 
@@ -544,11 +652,11 @@ func TestHandleEventBatchOk(t *testing.T) {
 					BlockNumber:      12345,
 					TransactionIndex: 10,
 					LogIndex:         20,
-					TransactionHash:  tktypes.Bytes32(tktypes.RandBytes(32)),
-					Signature:        tktypes.Bytes32(tktypes.RandBytes(32)),
+					TransactionHash:  pldtypes.RandBytes32(),
+					Signature:        pldtypes.RandBytes32(),
 				},
 				SoliditySignature: "event1()",
-				Address:           *tktypes.RandAddress(),
+				Address:           *pldtypes.RandAddress(),
 				Data:              []byte("some data"),
 			},
 		},
@@ -567,15 +675,18 @@ func TestHandleEventBatchOk(t *testing.T) {
 		}, nil
 	}
 
-	res, err := tp.r.handleEventBatch(ctx, tp.r.rm.p.DB(), batch)
+	err := tp.r.rm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
+		return tp.r.handleEventBatch(ctx, dbTX, batch)
+	})
 	require.NoError(t, err)
-	assert.NotNil(t, res)
 
 }
 
 func TestHandleEventBatchError(t *testing.T) {
 
-	ctx, _, tp, _, done := newTestRegistry(t, false)
+	ctx, _, tp, _, done := newTestRegistry(t, false, func(mc *mockComponents, conf *pldconf.RegistryManagerConfig, regConf *prototk.RegistryConfig) {
+		mc.db.ExpectBegin()
+	})
 	defer done()
 
 	batch := &blockindexer.EventDeliveryBatch{
@@ -585,11 +696,11 @@ func TestHandleEventBatchError(t *testing.T) {
 				BlockNumber:      12345,
 				TransactionIndex: 10,
 				LogIndex:         20,
-				TransactionHash:  tktypes.Bytes32(tktypes.RandBytes(32)),
-				Signature:        tktypes.Bytes32(tktypes.RandBytes(32)),
+				TransactionHash:  pldtypes.RandBytes32(),
+				Signature:        pldtypes.RandBytes32(),
 			},
 			SoliditySignature: "event1()",
-			Address:           *tktypes.RandAddress(),
+			Address:           *pldtypes.RandAddress(),
 			Data:              []byte("some data"),
 		}},
 	}
@@ -598,7 +709,9 @@ func TestHandleEventBatchError(t *testing.T) {
 		return nil, fmt.Errorf("pop")
 	}
 
-	_, err := tp.r.handleEventBatch(ctx, tp.r.rm.p.DB(), batch)
+	err := tp.r.rm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
+		return tp.r.handleEventBatch(ctx, dbTX, batch)
+	})
 	require.Regexp(t, "pop", err)
 
 }

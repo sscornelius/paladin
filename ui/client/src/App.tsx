@@ -22,17 +22,20 @@ import {
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { constants } from "./components/config";
 import { Header } from "./components/Header";
 import { ApplicationContextProvider } from "./contexts/ApplicationContext";
+import { AppRoutes } from "./routes";
 import { darkThemeOptions, lightThemeOptions } from "./themes/default";
-import { Indexer } from "./views/indexer";
+import { getBasePath } from "./utils";
+import { Activity } from "./views/Activity";
+import { Domains } from "./views/Domains";
+import { Keys } from "./views/Keys";
+import { Nodes } from "./views/Peers";
 import { Registries } from "./views/Registries";
 import { Submissions } from "./views/Submissions";
-import { useEffect, useMemo, useState } from "react";
-import { constants } from "./components/config";
-import { AppRoutes } from "./routes";
-import { Nodes } from "./views/Peers";
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({}),
@@ -87,20 +90,24 @@ function App() {
     []
   );
 
+  const basePath = getBasePath();
+
   return (
     <>
       <QueryClientProvider client={queryClient}>
         <ApplicationContextProvider colorMode={colorMode}>
           <ThemeProvider theme={theme}>
             <CssBaseline />
-            <BrowserRouter>
+            <BrowserRouter basename={basePath}>
               <Header />
               <Routes>
-                <Route path={AppRoutes.Indexer} element={<Indexer />} />
+                <Route path={AppRoutes.Activity} element={<Activity />} />
                 <Route path={AppRoutes.Submissions} element={<Submissions />} />
                 <Route path={AppRoutes.Peers} element={<Nodes />} />
+                <Route path={AppRoutes.Keys} element={<Keys />} />
                 <Route path={AppRoutes.Registry} element={<Registries />} />
-                <Route path="*" element={<Navigate to={AppRoutes.Indexer} replace />} />
+                <Route path={AppRoutes.Domains} element={<Domains />} />
+                <Route path="*" element={<Navigate to={AppRoutes.Activity} replace />} />
               </Routes>
             </BrowserRouter>
           </ThemeProvider>

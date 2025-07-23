@@ -18,21 +18,44 @@ syntax = "proto3";
 package io.kaleido.paladin.kata.zeto;
 option go_package = "pkg/proto";
 
+message Circuit {
+  string name = 1;
+  string type = 2;
+  bool usesNullifiers = 3;
+  bool usesEncryption = 4;
+  bool usesKyc = 5;
+}
+
 message ProvingRequest {
-  string circuitId = 1;
+  Circuit circuit = 1;
   ProvingRequestCommon common = 2;
   bytes extras = 3;
 }
 
 message ProvingRequestCommon {
   repeated string inputCommitments = 1;
-  repeated uint64 inputValues = 2;
+  TokenType tokenType  = 2;
   repeated string inputSalts = 3;
   string inputOwner = 4;
   repeated string outputCommitments = 5;
-  repeated uint64 outputValues = 6;
-  repeated string outputSalts = 7;
-  repeated string outputOwners = 8;
+  repeated string outputSalts = 6;
+  repeated string outputOwners = 7;
+  bytes tokenSecrets = 8;
+}
+
+enum TokenType {
+  fungible = 0;
+  nunFungible = 1;
+}
+
+message TokenSecrets_Fungible {
+  repeated uint64 inputValues = 1;
+  repeated uint64 outputValues = 2;
+}
+
+message TokenSecrets_NonFungible {
+  repeated string tokenIds = 1;
+  repeated string tokenUris = 2;
 }
 
 message ProvingRequestExtras_Encryption {
@@ -40,6 +63,17 @@ message ProvingRequestExtras_Encryption {
 }
 
 message ProvingRequestExtras_Nullifiers {
+  MerkleProofObject smtProof = 1;
+  string delegate = 2;
+}
+
+message ProvingRequestExtras_NullifiersKyc {
+  MerkleProofObject smtUtxoProof = 1;
+  MerkleProofObject smtKycProof = 2;
+  string delegate = 3;
+}
+
+message MerkleProofObject {
   string root = 1;
   repeated MerkleProof merkleProofs = 2;
   repeated bool enabled = 3;

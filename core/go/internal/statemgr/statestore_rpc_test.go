@@ -27,10 +27,10 @@ import (
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/rpcclient"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/rpcclient"
 	"github.com/kaleido-io/paladin/toolkit/pkg/rpcserver"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,10 +72,10 @@ func TestRPC(t *testing.T) {
 
 	var abiParam abi.Parameter
 	err := json.Unmarshal([]byte(widgetABI), &abiParam)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	schema, err := newABISchema(ctx, "domain1", &abiParam)
 	assert.NoError(t, err)
-	err = ss.persistSchemas(ctx, ss.p.DB(), []*pldapi.Schema{schema.Schema})
+	err = ss.persistSchemas(ctx, ss.p.NOTX(), []*pldapi.Schema{schema.Schema})
 	assert.NoError(t, err)
 
 	var schemas []*pldapi.Schema
@@ -86,9 +86,14 @@ func TestRPC(t *testing.T) {
 	assert.Equal(t, pldapi.SchemaTypeABI, schemas[0].Type.V())
 	assert.Equal(t, "0x3612029bf239cbed1e27548e9211ecfe72496dfec4183fd3ea79a3a54eb126be", schemas[0].ID.String())
 
-	contractAddress := tktypes.RandAddress()
+	var rpcSchema *pldapi.Schema
+	rpcErr = c.CallRPC(ctx, &rpcSchema, "pstate_getSchemaById", "domain1", schemas[0].ID)
+	require.NoError(t, rpcErr)
+	require.NotNil(t, rpcSchema)
+
+	contractAddress := pldtypes.RandAddress()
 	var state *pldapi.State
-	rpcErr = c.CallRPC(ctx, &state, "pstate_storeState", "domain1", contractAddress.String(), schemas[0].ID, tktypes.RawJSON(`{
+	rpcErr = c.CallRPC(ctx, &state, "pstate_storeState", "domain1", contractAddress.String(), schemas[0].ID, pldtypes.RawJSON(`{
 	    "salt": "fd2724ce91a859e24c228e50ae17b9443454514edce9a64437c208b0184d8910",
 		"size": 10,
 		"color": "blue",
@@ -104,7 +109,7 @@ func TestRPC(t *testing.T) {
 	assert.Equal(t, "0x30e278bca8d876cdceb24520b0ebe736a64a9cb8019157f40fa5b03f083f824d", state.ID.String())
 
 	var states []*pldapi.State
-	rpcErr = c.CallRPC(ctx, &states, "pstate_queryContractStates", "domain1", contractAddress.String(), schemas[0].ID, tktypes.RawJSON(`{
+	rpcErr = c.CallRPC(ctx, &states, "pstate_queryContractStates", "domain1", contractAddress.String(), schemas[0].ID, pldtypes.RawJSON(`{
 		"eq": [{
 		  "field": "color",
 		  "value": "blue"
@@ -115,7 +120,7 @@ func TestRPC(t *testing.T) {
 	assert.Len(t, states, 1)
 	assert.Equal(t, state, states[0])
 
-	rpcErr = c.CallRPC(ctx, &states, "pstate_queryStates", "domain1", schemas[0].ID, tktypes.RawJSON(`{
+	rpcErr = c.CallRPC(ctx, &states, "pstate_queryStates", "domain1", schemas[0].ID, pldtypes.RawJSON(`{
 		"eq": [{
 		  "field": "color",
 		  "value": "blue"
@@ -127,8 +132,8 @@ func TestRPC(t *testing.T) {
 	assert.Equal(t, state, states[0])
 
 	// Write some nullifiers and query them back
-	nullifier1 := tktypes.HexBytes(tktypes.RandHex(32))
-	err = ss.WriteNullifiersForReceivedStates(ctx, ss.p.DB(), "domain1", []*components.NullifierUpsert{
+	nullifier1 := pldtypes.HexBytes(pldtypes.RandHex(32))
+	err = ss.WriteNullifiersForReceivedStates(ctx, ss.p.NOTX(), "domain1", []*components.NullifierUpsert{
 		{
 			ID:    nullifier1,
 			State: state.ID,
@@ -136,7 +141,7 @@ func TestRPC(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rpcErr = c.CallRPC(ctx, &states, "pstate_queryContractNullifiers", "domain1", contractAddress.String(), schemas[0].ID, tktypes.RawJSON(`{
+	rpcErr = c.CallRPC(ctx, &states, "pstate_queryContractNullifiers", "domain1", contractAddress.String(), schemas[0].ID, pldtypes.RawJSON(`{
 		"eq": [{
 		  "field": "color",
 		  "value": "blue"
@@ -148,7 +153,7 @@ func TestRPC(t *testing.T) {
 	assert.Equal(t, state.ID, states[0].ID)
 	assert.Equal(t, nullifier1, states[0].Nullifier.ID)
 
-	rpcErr = c.CallRPC(ctx, &states, "pstate_queryNullifiers", "domain1", schemas[0].ID, tktypes.RawJSON(`{
+	rpcErr = c.CallRPC(ctx, &states, "pstate_queryNullifiers", "domain1", schemas[0].ID, pldtypes.RawJSON(`{
 		"eq": [{
 		  "field": "color",
 		  "value": "blue"

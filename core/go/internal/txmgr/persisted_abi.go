@@ -19,30 +19,30 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/hyperledger/firefly-common/pkg/i18n"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/core/internal/filters"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/query"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
-	"gorm.io/gorm"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"gorm.io/gorm/clause"
 )
 
 type PersistedABI struct {
-	Hash    tktypes.Bytes32   `gorm:"column:hash"`
-	ABI     tktypes.RawJSON   `gorm:"column:abi"`
-	Created tktypes.Timestamp `gorm:"column:created;autoCreateTime:nano"`
+	Hash    pldtypes.Bytes32   `gorm:"column:hash"`
+	ABI     pldtypes.RawJSON   `gorm:"column:abi"`
+	Created pldtypes.Timestamp `gorm:"column:created;autoCreateTime:nano"`
 }
 
 type PersistedABIEntry struct {
-	Selector   tktypes.HexBytes `gorm:"column:selector"`
-	Type       string           `gorm:"column:type"`
-	FullHash   tktypes.HexBytes `gorm:"column:full_hash"`
-	ABIHash    tktypes.Bytes32  `gorm:"column:abi_hash"`
-	Definition tktypes.RawJSON  `gorm:"column:definition"`
+	Selector   pldtypes.HexBytes `gorm:"column:selector"`
+	Type       string            `gorm:"column:type"`
+	FullHash   pldtypes.HexBytes `gorm:"column:full_hash"`
+	ABIHash    pldtypes.Bytes32  `gorm:"column:abi_hash"`
+	Definition pldtypes.RawJSON  `gorm:"column:definition"`
 }
 
 var abiFilters = filters.FieldMap{
@@ -50,13 +50,13 @@ var abiFilters = filters.FieldMap{
 	"created": filters.TimestampField("created"),
 }
 
-func (tm *txManager) getABIByHash(ctx context.Context, dbTX *gorm.DB, hash tktypes.Bytes32) (*pldapi.StoredABI, error) {
+func (tm *txManager) getABIByHash(ctx context.Context, dbTX persistence.DBTX, hash pldtypes.Bytes32) (*pldapi.StoredABI, error) {
 	pa, found := tm.abiCache.Get(hash)
 	if found {
 		return pa, nil
 	}
 	var pABIs []*PersistedABI
-	err := dbTX.
+	err := dbTX.DB().
 		WithContext(ctx).
 		Table("abis").
 		Where("hash = ?", hash).
@@ -73,25 +73,34 @@ func (tm *txManager) getABIByHash(ctx context.Context, dbTX *gorm.DB, hash tktyp
 	return pa, nil
 }
 
-func (tm *txManager) storeABI(ctx context.Context, dbTX *gorm.DB, a abi.ABI) (func(), *tktypes.Bytes32, error) {
-	postCommit, pa, err := tm.UpsertABI(ctx, dbTX, a)
-	if err != nil {
-		return nil, nil, err
-	}
-	return postCommit, &pa.Hash, err
+func (tm *txManager) storeABINewDBTX(ctx context.Context, a abi.ABI) (hash *pldtypes.Bytes32, err error) {
+	err = tm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) (err error) {
+		hash, err = tm.storeABI(ctx, dbTX, a)
+		return err
+	})
+	return hash, err
+
 }
 
-func (tm *txManager) UpsertABI(ctx context.Context, dbTX *gorm.DB, a abi.ABI) (func(), *pldapi.StoredABI, error) {
-	hash, err := tktypes.ABISolDefinitionHash(ctx, a)
+func (tm *txManager) storeABI(ctx context.Context, dbTX persistence.DBTX, a abi.ABI) (*pldtypes.Bytes32, error) {
+	pa, err := tm.UpsertABI(ctx, dbTX, a)
 	if err != nil {
-		return nil, nil, i18n.WrapError(ctx, err, msgs.MsgTxMgrInvalidABI)
+		return nil, err
+	}
+	return &pa.Hash, err
+}
+
+func (tm *txManager) UpsertABI(ctx context.Context, dbTX persistence.DBTX, a abi.ABI) (*pldapi.StoredABI, error) {
+	hash, err := pldtypes.ABISolDefinitionHash(ctx, a)
+	if err != nil {
+		return nil, i18n.WrapError(ctx, err, msgs.MsgTxMgrInvalidABI)
 	}
 
 	// If cached, nothing to do (note must not cache until written for this to be true)
 	pa, existing := tm.abiCache.Get(*hash)
 	if existing {
 		log.L(ctx).Debugf("ABI %s already cached", hash)
-		return func() {}, pa, nil
+		return pa, nil
 	}
 
 	// Grab all the error definitions for reverse lookup
@@ -103,8 +112,8 @@ func (tm *txManager) UpsertABI(ctx context.Context, dbTX *gorm.DB, a abi.ABI) (f
 			abiEntries = append(abiEntries, &PersistedABIEntry{
 				ABIHash:    *hash,
 				Type:       string(entry.Type),
-				Selector:   tktypes.HexBytes(fullHash[0:4]),
-				FullHash:   tktypes.HexBytes(fullHash),
+				Selector:   pldtypes.HexBytes(fullHash[0:4]),
+				FullHash:   pldtypes.HexBytes(fullHash),
 				Definition: defBytes,
 			})
 		}
@@ -113,7 +122,7 @@ func (tm *txManager) UpsertABI(ctx context.Context, dbTX *gorm.DB, a abi.ABI) (f
 	// Otherwise ask the DB to store
 	abiBytes, err := json.Marshal(a)
 	if err == nil {
-		err = dbTX.
+		err = dbTX.DB().
 			Table("abis").
 			Clauses(clause.OnConflict{
 				Columns: []clause.Column{
@@ -128,30 +137,31 @@ func (tm *txManager) UpsertABI(ctx context.Context, dbTX *gorm.DB, a abi.ABI) (f
 			Error
 	}
 	if err == nil && len(abiEntries) > 0 {
-		err = dbTX.
+		err = dbTX.DB().
 			Table("abi_entries").
 			Clauses(clause.OnConflict{DoNothing: true}).
 			Create(abiEntries).
 			Error
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	pa = &pldapi.StoredABI{Hash: *hash, ABI: a}
-	return func() {
+	dbTX.AddPostCommit(func(ctx context.Context) {
 		// Caching must only be done post-commit of the DB transaction
 		tm.abiCache.Set(*hash, pa)
-	}, pa, err
+	})
+	return pa, err
 }
 
 func (tm *txManager) queryABIs(ctx context.Context, jq *query.QueryJSON) ([]*pldapi.StoredABI, error) {
-	qw := &queryWrapper[PersistedABI, pldapi.StoredABI]{
-		p:           tm.p,
-		table:       "abis",
-		defaultSort: "-created",
-		filters:     abiFilters,
-		query:       jq,
-		mapResult: func(pa *PersistedABI) (*pldapi.StoredABI, error) {
+	qw := &filters.QueryWrapper[PersistedABI, pldapi.StoredABI]{
+		P:           tm.p,
+		Table:       "abis",
+		DefaultSort: "-created",
+		Filters:     abiFilters,
+		Query:       jq,
+		MapResult: func(pa *PersistedABI) (*pldapi.StoredABI, error) {
 			var a abi.ABI
 			err := json.Unmarshal(pa.ABI, &a)
 			return &pldapi.StoredABI{
@@ -160,5 +170,5 @@ func (tm *txManager) queryABIs(ctx context.Context, jq *query.QueryJSON) ([]*pld
 			}, err
 		},
 	}
-	return qw.run(ctx, nil)
+	return qw.Run(ctx, nil)
 }

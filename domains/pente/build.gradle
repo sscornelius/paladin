@@ -41,7 +41,7 @@ jar {
         include 'contracts/domains/pente/PenteFactory.sol/PenteFactory.json'
         include 'contracts/domains/pente/PentePrivacyGroup.sol/PentePrivacyGroup.json'
         include 'contracts/domains/interfaces/IPente.sol/IPente.json'
-        include 'contracts/private/interfaces/IPenteExternalCall.sol/IPenteExternalCall.json'
+        include 'contracts/domains/interfaces/IPenteExternalCall.sol/IPenteExternalCall.json'
     }
 
     from sourceSets.main.output
@@ -110,6 +110,7 @@ dependencies {
     testImplementation 'org.mockito:mockito-core:5.12+'
     testImplementation 'org.slf4j:slf4j-reload4j:2.0+'
     testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.17+'
+    testImplementation 'org.skyscreamer:jsonassert:1.5.3'
 
     implementation 'org.hyperledger.besu:evm:24.5.4'
     implementation 'org.hyperledger.besu:besu-datatypes:24.5.4'

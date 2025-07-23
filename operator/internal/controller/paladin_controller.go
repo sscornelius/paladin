@@ -1,5 +1,5 @@
 /*
-Copyright 2024.
+Copyright 2025.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -64,9 +64,10 @@ var checkPsqlScript string
 // PaladinReconciler reconciles a Paladin object
 type PaladinReconciler struct {
 	client.Client
-	config  *config.Config
-	Scheme  *runtime.Scheme
-	Changes *InFlight
+	config           *config.Config
+	Scheme           *runtime.Scheme
+	Changes          *InFlight
+	RPCClientManager *rpcClientManager
 }
 
 // allows generic functions by giving a mapping between the types and interfaces for the CR
@@ -89,6 +90,7 @@ func (r *PaladinReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if errors.IsNotFound(err) {
 			// Resource not found; could have been deleted after reconcile request.
 			// Return and don't requeue.
+			r.RPCClientManager.removeNode(name)
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
@@ -379,6 +381,10 @@ func (r *PaladinReconciler) generateStatefulSetTemplate(node *corev1alpha1.Palad
 									MountPath: "/app/config",
 									ReadOnly:  true,
 								},
+								{
+									Name:      "appjna",
+									MountPath: "/app/jna",
+								},
 							},
 							Args: []string{
 								"/app/config/pldconf.paladin.yaml",
@@ -438,6 +444,12 @@ func (r *PaladinReconciler) generateStatefulSetTemplate(node *corev1alpha1.Palad
 										Name: name,
 									},
 								},
+							},
+						},
+						{
+							Name: "appjna",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
 						},
 					},
@@ -701,6 +713,14 @@ func (r *PaladinReconciler) generatePaladinConfig(ctx context.Context, node *cor
 		}
 	}
 
+	// Enable metrics server by default on localhost:6100
+	if pldConf.MetricsServer.Enabled == nil {
+		pldConf.MetricsServer.Enabled = confutil.P(true)
+		if pldConf.MetricsServer.Port == nil {
+			pldConf.MetricsServer.Port = confutil.P(6100)
+		}
+	}
+
 	// Node name can be overridden, but defaults to the CR name
 	if pldConf.NodeName == "" {
 		pldConf.NodeName = node.Name
@@ -716,9 +736,10 @@ func (r *PaladinReconciler) generatePaladinConfig(ctx context.Context, node *cor
 	if len(pldConf.RPCServer.HTTP.StaticServers) == 0 {
 		pldConf.RPCServer.HTTP.StaticServers = append(pldConf.RPCServer.HTTP.StaticServers,
 			pldconf.StaticServerConfig{
-				Enabled:    true,
-				StaticPath: "/app/ui",
-				URLPath:    "/ui",
+				Enabled:      true,
+				StaticPath:   "/app/ui",
+				URLPath:      "/ui",
+				BaseRedirect: "ui/activity",
 			})
 	}
 
@@ -746,6 +767,9 @@ func (r *PaladinReconciler) generatePaladinConfig(ctx context.Context, node *cor
 	if err := r.generatePaladinRegistries(ctx, node, &pldConf); err != nil {
 		return "", nil, err
 	}
+
+	// Add any provided signing modules into the supplied config
+	r.generatePaladinSigningModules(ctx, node, &pldConf)
 
 	tlsSecrets, err := r.generatePaladinTransports(ctx, node, &pldConf)
 	if err != nil {
@@ -804,12 +828,17 @@ func (r *PaladinReconciler) generatePaladinAuthConfig(ctx context.Context, node 
 
 	switch authConfig.Type {
 	case corev1alpha1.AuthTypeSecret:
-		if authConfig.Secret == nil {
-			return fmt.Errorf("AuthSecret must be provided when using AuthTypeSecret")
+		authConfigSec := authConfig.Secret
+		if authConfigSec == nil {
+			// fallback to deprecated authConfig.SecretRef
+			authConfigSec = authConfig.SecretRef
 		}
-		secretName := authConfig.Secret.Name
+		if authConfigSec == nil {
+			return fmt.Errorf("authConfig.Secret must be provided when using AuthTypeSecret")
+		}
+		secretName := authConfigSec.Name
 		if secretName == "" {
-			return fmt.Errorf("AuthSecret must be provided when using AuthTypeSecret")
+			return fmt.Errorf("authConfig.Secret.Name must be provided when using AuthTypeSecret")
 		}
 		sec := &corev1.Secret{}
 		if err := r.Client.Get(ctx, types.NamespacedName{Name: secretName, Namespace: node.Namespace}, sec); err != nil {
@@ -923,10 +952,11 @@ func (r *PaladinReconciler) generatePaladinSigners(ctx context.Context, node *co
 		}
 
 		wallet := &pldconf.WalletConfig{
-			Name:        s.Name,
-			SignerType:  pldconf.WalletSignerTypeEmbedded,
-			KeySelector: s.KeySelector,
-			Signer:      &pldconf.SignerConfig{},
+			Name:                    s.Name,
+			SignerType:              pldconf.WalletSignerTypeEmbedded,
+			KeySelector:             s.KeySelector,
+			KeySelectorMustNotMatch: s.KeySelectorMustNotMatch,
+			Signer:                  &pldconf.SignerConfig{},
 		}
 
 		// Upsert a secret if we've been asked to. We use a mnemonic in this case (rather than directly generating a 32byte seed)
@@ -1059,6 +1089,25 @@ func (r *PaladinReconciler) generatePaladinRegistries(ctx context.Context, node 
 	}
 
 	return nil
+}
+
+func (r *PaladinReconciler) generatePaladinSigningModules(ctx context.Context, node *corev1alpha1.Paladin, pldConf *pldconf.PaladinConfig) {
+	for _, signingModule := range node.Spec.SigningModules {
+		var signingModuleConf map[string]any
+		if err := json.Unmarshal([]byte(signingModule.ConfigJSON), &signingModuleConf); err != nil {
+			log.FromContext(ctx).Error(err, fmt.Sprintf("configJSON for signing module '%s' cannot be parsed (skipping)", signingModule.Name))
+			continue // skip it - but continue trying others
+		}
+
+		// It's available, add it to our config
+		if pldConf.SigningModules == nil {
+			pldConf.SigningModules = make(map[string]*pldconf.SigningModuleConfig)
+		}
+		pldConf.SigningModules[signingModule.Name] = &pldconf.SigningModuleConfig{
+			Plugin: r.mapPluginConfig(signingModule.Plugin),
+			Config: signingModuleConf,
+		}
+	}
 }
 
 func (r *PaladinReconciler) generatePaladinTransports(ctx context.Context, node *corev1alpha1.Paladin, pldConf *pldconf.PaladinConfig) ([]string, error) {

@@ -20,15 +20,16 @@ import (
 	"os"
 	"runtime/debug"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -54,12 +55,12 @@ func transportHeaderAccessor(msg *prototk.TransportMessage) *prototk.Header {
 
 }
 
-func (tp *testTransportManager) mock(t *testing.T) *componentmocks.TransportManager {
-	mdm := componentmocks.NewTransportManager(t)
+func (tp *testTransportManager) mock(t *testing.T) *componentsmocks.TransportManager {
+	mdm := componentsmocks.NewTransportManager(t)
 	pluginMap := make(map[string]*pldconf.PluginConfig)
 	for name := range tp.transports {
 		pluginMap[name] = &pldconf.PluginConfig{
-			Type:    string(tktypes.LibraryTypeCShared),
+			Type:    string(pldtypes.LibraryTypeCShared),
 			Library: "/tmp/not/applicable",
 		}
 	}
@@ -196,7 +197,7 @@ func TestTransportRequestsOK(t *testing.T) {
 	// This is the point the transport manager would call us to say the transport is initialized
 	// (once it's happy it's updated its internal state)
 	transportAPI.Initialized()
-	require.NoError(t, pc.WaitForInit(ctx))
+	require.NoError(t, pc.WaitForInit(ctx, prototk.PluginInfo_DOMAIN))
 
 	callbacks := <-waitForCallbacks
 	rts, err := callbacks.GetTransportDetails(ctx, &prototk.GetTransportDetailsRequest{
@@ -215,16 +216,109 @@ func TestTransportRequestsOK(t *testing.T) {
 }
 
 func TestTransportRegisterFail(t *testing.T) {
-
-	waitForError := make(chan error, 1)
+	waitForErrors := make(chan error)
+	registrationCount := make(chan string)
 
 	tdm := &testTransportManager{
 		transports: map[string]plugintk.Plugin{
 			"transport1": &mockPlugin[prototk.TransportMessage]{
-				t:                   t,
-				allowRegisterErrors: true,
-				connectFactory:      transportConnectFactory,
-				headerAccessor:      transportHeaderAccessor,
+				t:              t,
+				connectFactory: transportConnectFactory,
+				headerAccessor: transportHeaderAccessor,
+				preRegister: func(transportID string) *prototk.TransportMessage {
+					return &prototk.TransportMessage{
+						Header: &prototk.Header{
+							MessageType: prototk.Header_REGISTER,
+							PluginId:    transportID,
+							MessageId:   uuid.NewString(),
+						},
+					}
+				},
+				expectClose: func(err error) {
+					waitForErrors <- err
+				},
+			},
+			"transport2": &mockPlugin[prototk.TransportMessage]{
+				t:              t,
+				connectFactory: transportConnectFactory,
+				headerAccessor: transportHeaderAccessor,
+				preRegister: func(transportID string) *prototk.TransportMessage {
+					return &prototk.TransportMessage{
+						Header: &prototk.Header{
+							MessageType: prototk.Header_REGISTER,
+							PluginId:    transportID,
+							MessageId:   uuid.NewString(),
+						},
+					}
+				},
+				expectClose: func(err error) {
+					waitForErrors <- err
+				},
+			},
+		},
+	}
+	tdm.transportRegistered = func(name string, id uuid.UUID, toTransport components.TransportManagerToTransport) (plugintk.TransportCallbacks, error) {
+		defer func() {
+			registrationCount <- name
+		}()
+		return nil, fmt.Errorf("%s failed", name)
+	}
+
+	_, _, done := newTestTransportPluginManager(t, &testManagers{
+		testTransportManager: tdm,
+	})
+	defer done()
+
+	// Wait for all registrations to be attempted
+	registeredNames := make(map[string]bool)
+	for i := 0; i < len(tdm.transports); i++ {
+		select {
+		case name := <-registrationCount:
+			registeredNames[name] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("not all transport registrations attempted")
+		}
+	}
+
+	for name := range tdm.transports {
+		assert.True(t, registeredNames[name])
+	}
+
+	// Wait for all error callbacks
+	errorCount := 0
+	for i := 0; i < len(tdm.transports); i++ {
+		select {
+		case err := <-waitForErrors:
+			assert.NotNil(t, err)
+			errorCount++
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d of %d transport failure callbacks fired", errorCount, len(tdm.transports))
+		}
+	}
+	assert.Equal(t, len(tdm.transports), errorCount)
+}
+
+func TestTransportRegisterPartialSuccess(t *testing.T) {
+	waitForError := make(chan error, 1)
+	waitForSuccess := make(chan components.TransportManagerToTransport, 1)
+	registrationCount := make(chan string, 2)
+	errorCallbackDone := make(chan struct{}, 1)
+
+	tdm := &testTransportManager{
+		transports: map[string]plugintk.Plugin{
+			"transport_success": plugintk.NewTransport(func(callbacks plugintk.TransportCallbacks) plugintk.TransportAPI {
+				return &plugintk.TransportAPIBase{
+					Functions: &plugintk.TransportAPIFunctions{
+						ConfigureTransport: func(ctx context.Context, req *prototk.ConfigureTransportRequest) (*prototk.ConfigureTransportResponse, error) {
+							return &prototk.ConfigureTransportResponse{}, nil
+						},
+					},
+				}
+			}),
+			"transport_fail": &mockPlugin[prototk.TransportMessage]{
+				t:              t,
+				connectFactory: transportConnectFactory,
+				headerAccessor: transportHeaderAccessor,
 				preRegister: func(transportID string) *prototk.TransportMessage {
 					return &prototk.TransportMessage{
 						Header: &prototk.Header{
@@ -236,12 +330,22 @@ func TestTransportRegisterFail(t *testing.T) {
 				},
 				expectClose: func(err error) {
 					waitForError <- err
+					errorCallbackDone <- struct{}{}
 				},
 			},
 		},
 	}
 	tdm.transportRegistered = func(name string, id uuid.UUID, toTransport components.TransportManagerToTransport) (plugintk.TransportCallbacks, error) {
-		return nil, fmt.Errorf("pop")
+		defer func() {
+			registrationCount <- name
+		}()
+		if name == "transport_success" {
+			defer func() {
+				waitForSuccess <- toTransport
+			}()
+			return tdm, nil
+		}
+		return nil, fmt.Errorf("transport_fail registration failed")
 	}
 
 	_, _, done := newTestTransportPluginManager(t, &testManagers{
@@ -249,47 +353,40 @@ func TestTransportRegisterFail(t *testing.T) {
 	})
 	defer done()
 
-	assert.Regexp(t, "pop", <-waitForError)
-}
-
-func TestFromTransportRequestBadReq(t *testing.T) {
-
-	waitForResponse := make(chan struct{}, 1)
-
-	msgID := uuid.NewString()
-	ttm := &testTransportManager{
-		transports: map[string]plugintk.Plugin{
-			"transport1": &mockPlugin[prototk.TransportMessage]{
-				t:              t,
-				connectFactory: transportConnectFactory,
-				headerAccessor: transportHeaderAccessor,
-				sendRequest: func(pluginID string) *prototk.TransportMessage {
-					return &prototk.TransportMessage{
-						Header: &prototk.Header{
-							PluginId:    pluginID,
-							MessageId:   msgID,
-							MessageType: prototk.Header_REQUEST_FROM_PLUGIN,
-							// Missing payload
-						},
-					}
-				},
-				handleResponse: func(dm *prototk.TransportMessage) {
-					assert.Equal(t, msgID, *dm.Header.CorrelationId)
-					assert.Regexp(t, "PD011203", *dm.Header.ErrorMessage)
-					close(waitForResponse)
-				},
-			},
-		},
+	// Wait for both registrations to be attempted
+	registeredNames := make(map[string]bool)
+	for i := 0; i < len(tdm.transports); i++ {
+		select {
+		case name := <-registrationCount:
+			registeredNames[name] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("not all transport registrations attempted")
+		}
 	}
-	ttm.transportRegistered = func(name string, id uuid.UUID, toTransport components.TransportManagerToTransport) (fromTransport plugintk.TransportCallbacks, err error) {
-		return ttm, nil
+	for name := range tdm.transports {
+		assert.True(t, registeredNames[name])
 	}
 
-	_, _, done := newTestTransportPluginManager(t, &testManagers{
-		testTransportManager: ttm,
-	})
-	defer done()
+	// Verify successful transport is available
+	select {
+	case transportAPI := <-waitForSuccess:
+		assert.NotNil(t, transportAPI)
+	case <-time.After(1 * time.Second):
+		t.Fatal("successful transport API not received")
+	}
 
-	<-waitForResponse
+	// Verify failed transport triggers error callback
+	select {
+	case err := <-waitForError:
+		assert.Contains(t, err.Error(), "transport_fail registration failed")
+	case <-time.After(3 * time.Second):
+		t.Fatal("transport failure callback never fired")
+	}
 
+	// Wait for the error callback to complete before test cleanup
+	select {
+	case <-errorCallbackDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("error callback did not complete in time")
+	}
 }

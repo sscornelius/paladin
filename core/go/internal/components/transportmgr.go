@@ -19,12 +19,13 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 )
 
 type FireAndForgetMessageSend struct {
@@ -42,50 +43,6 @@ type ReceivedMessage struct {
 	CorrelationID *uuid.UUID
 	MessageType   string
 	Payload       []byte
-}
-
-type ReliableMessageType string
-
-const (
-	RMTState               ReliableMessageType = "state"
-	RMTReceipt             ReliableMessageType = "receipt"
-	RMTPreparedTransaction ReliableMessageType = "prepared_txn"
-)
-
-func (t ReliableMessageType) Enum() tktypes.Enum[ReliableMessageType] {
-	return tktypes.Enum[ReliableMessageType](t)
-}
-
-func (t ReliableMessageType) Options() []string {
-	return []string{
-		string(RMTState),
-		string(RMTReceipt),
-		string(RMTPreparedTransaction),
-	}
-}
-
-type ReliableMessage struct {
-	Sequence    uint64                            `json:"sequence"        gorm:"column:sequence;primaryKey"`
-	ID          uuid.UUID                         `json:"id"              gorm:"column:id"`
-	Created     tktypes.Timestamp                 `json:"created"         gorm:"column:created;autoCreateTime:false"` // generated in our code
-	Node        string                            `json:"node"            gorm:"column:node"`                         // The node id to send the message to
-	MessageType tktypes.Enum[ReliableMessageType] `json:"messageType"     gorm:"column:msg_type"`
-	Metadata    tktypes.RawJSON                   `json:"metadata"        gorm:"column:metadata"`
-	Ack         *ReliableMessageAck               `json:"ack,omitempty"   gorm:"foreignKey:MessageID;references:ID;"`
-}
-
-func (rm ReliableMessage) TableName() string {
-	return "reliable_msgs"
-}
-
-type ReliableMessageAck struct {
-	MessageID uuid.UUID         `json:"-"                                gorm:"column:id;primaryKey"`
-	Time      tktypes.Timestamp `json:"time,omitempty"                   gorm:"column:time;autoCreateTime:false"` // generated in our code
-	Error     string            `json:"error,omitempty"                  gorm:"column:error"`
-}
-
-func (rma ReliableMessageAck) TableName() string {
-	return "reliable_msg_acks"
 }
 
 type TransportManagerToTransport interface {
@@ -151,7 +108,8 @@ type TransportManager interface {
 	//
 	// The message is persisted to the DB in the supplied transaction, then sent on the wire with indefinite retry
 	// including over node restart, until an ack is returned from the remote node.
-	//
-	// The pre-commit handler must be called after the DB transaction commits to trigger the delivery.
-	SendReliable(ctx context.Context, dbTX *gorm.DB, msg ...*ReliableMessage) (preCommit func(), err error)
+	SendReliable(ctx context.Context, dbTX persistence.DBTX, msg ...*pldapi.ReliableMessage) (err error)
+
+	QueryReliableMessages(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.ReliableMessage, error)
+	QueryReliableMessageAcks(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.ReliableMessageAck, error)
 }

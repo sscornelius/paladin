@@ -26,13 +26,14 @@ import (
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
 	"github.com/kaleido-io/paladin/core/internal/statemgr"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
+	"github.com/kaleido-io/paladin/core/mocks/blockindexermocks"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
 	"github.com/kaleido-io/paladin/core/mocks/ethclientmocks"
 
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
 	"github.com/kaleido-io/paladin/core/pkg/persistence/mockpersistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -40,43 +41,43 @@ import (
 
 type mockComponents struct {
 	db               sqlmock.Sqlmock
-	c                *componentmocks.AllComponents
+	c                *componentsmocks.AllComponents
 	ethClient        *ethclientmocks.EthClient
 	ethClientFactory *ethclientmocks.EthClientFactory
-	stateStore       *componentmocks.StateManager
-	blockIndexer     *componentmocks.BlockIndexer
-	keyManager       *componentmocks.KeyManager
-	txManager        *componentmocks.TXManager
-	privateTxManager *componentmocks.PrivateTxManager
-	transportMgr     *componentmocks.TransportManager
+	stateStore       *componentsmocks.StateManager
+	blockIndexer     *blockindexermocks.BlockIndexer
+	keyManager       *componentsmocks.KeyManager
+	txManager        *componentsmocks.TXManager
+	privateTxManager *componentsmocks.PrivateTxManager
+	transportMgr     *componentsmocks.TransportManager
 }
 
 func newTestDomainManager(t *testing.T, realDB bool, conf *pldconf.DomainManagerConfig, extraSetup ...func(mc *mockComponents)) (context.Context, *domainManager, *mockComponents, func()) {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
-	componentMocks := componentmocks.NewAllComponents(t)
+	allComponents := componentsmocks.NewAllComponents(t)
 	mc := &mockComponents{
-		c:                componentMocks,
-		blockIndexer:     componentmocks.NewBlockIndexer(t),
-		stateStore:       componentmocks.NewStateManager(t),
+		c:                allComponents,
+		blockIndexer:     blockindexermocks.NewBlockIndexer(t),
+		stateStore:       componentsmocks.NewStateManager(t),
 		ethClientFactory: ethclientmocks.NewEthClientFactory(t),
-		keyManager:       componentmocks.NewKeyManager(t),
-		txManager:        componentmocks.NewTXManager(t),
-		privateTxManager: componentmocks.NewPrivateTxManager(t),
-		transportMgr:     componentmocks.NewTransportManager(t),
+		keyManager:       componentsmocks.NewKeyManager(t),
+		txManager:        componentsmocks.NewTXManager(t),
+		privateTxManager: componentsmocks.NewPrivateTxManager(t),
+		transportMgr:     componentsmocks.NewTransportManager(t),
 	}
 
 	// Blockchain stuff is always mocked
-	componentMocks.On("EthClientFactory").Return(mc.ethClientFactory)
+	allComponents.On("EthClientFactory").Return(mc.ethClientFactory)
 	mc.ethClientFactory.On("ChainID").Return(int64(12345)).Maybe()
 	mc.ethClientFactory.On("HTTPClient").Return(mc.ethClient).Maybe()
 	mc.ethClientFactory.On("WSClient").Return(mc.ethClient).Maybe()
-	componentMocks.On("BlockIndexer").Return(mc.blockIndexer)
+	allComponents.On("BlockIndexer").Return(mc.blockIndexer)
 	mc.keyManager.On("AddInMemorySigner", "domain", mock.Anything).Return().Maybe()
-	componentMocks.On("KeyManager").Return(mc.keyManager)
-	componentMocks.On("TxManager").Return(mc.txManager)
-	componentMocks.On("PrivateTxManager").Return(mc.privateTxManager)
-	componentMocks.On("TransportManager").Return(mc.transportMgr)
+	allComponents.On("KeyManager").Return(mc.keyManager)
+	allComponents.On("TxManager").Return(mc.txManager)
+	allComponents.On("PrivateTxManager").Return(mc.privateTxManager)
+	allComponents.On("TransportManager").Return(mc.transportMgr)
 	mc.transportMgr.On("LocalNodeName").Return("node1").Maybe()
 
 	var p persistence.Persistence
@@ -87,8 +88,8 @@ func newTestDomainManager(t *testing.T, realDB bool, conf *pldconf.DomainManager
 		p, pDone, err = persistence.NewUnitTestPersistence(ctx, "domainmgr")
 		require.NoError(t, err)
 		realStateManager = statemgr.NewStateManager(ctx, &pldconf.StateStoreConfig{}, p)
-		componentMocks.On("StateManager").Return(realStateManager)
-		_, _ = realStateManager.PreInit(componentMocks)
+		allComponents.On("StateManager").Return(realStateManager)
+		_, _ = realStateManager.PreInit(allComponents)
 	} else {
 		mp, err := mockpersistence.NewSQLMockProvider()
 		require.NoError(t, err)
@@ -97,23 +98,24 @@ func newTestDomainManager(t *testing.T, realDB bool, conf *pldconf.DomainManager
 		pDone = func() {
 			require.NoError(t, mp.Mock.ExpectationsWereMet())
 		}
-		componentMocks.On("StateManager").Return(mc.stateStore)
+		allComponents.On("StateManager").Return(mc.stateStore)
 	}
-	componentMocks.On("Persistence").Return(p)
+	allComponents.On("Persistence").Return(p)
 
 	for _, fn := range extraSetup {
 		fn(mc)
 	}
 
 	dm := NewDomainManager(ctx, conf)
-	_, err = dm.PreInit(componentMocks)
+
+	_, err = dm.PreInit(allComponents)
 	require.NoError(t, err)
-	err = dm.PostInit(componentMocks)
+	err = dm.PostInit(allComponents)
 	require.NoError(t, err)
 
 	if realDB {
-		componentMocks.On("DomainManager").Return(dm)
-		_ = realStateManager.PostInit(componentMocks)
+		allComponents.On("DomainManager").Return(dm)
+		_ = realStateManager.PostInit(allComponents)
 		_ = realStateManager.Start()
 	}
 
@@ -132,10 +134,10 @@ func TestConfiguredDomains(t *testing.T) {
 		Domains: map[string]*pldconf.DomainConfig{
 			"test1": {
 				Plugin: pldconf.PluginConfig{
-					Type:    string(tktypes.LibraryTypeCShared),
+					Type:    string(pldtypes.LibraryTypeCShared),
 					Library: "some/where",
 				},
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	})
@@ -143,7 +145,7 @@ func TestConfiguredDomains(t *testing.T) {
 
 	assert.Equal(t, map[string]*pldconf.PluginConfig{
 		"test1": {
-			Type:    string(tktypes.LibraryTypeCShared),
+			Type:    string(pldtypes.LibraryTypeCShared),
 			Library: "some/where",
 		},
 	}, dm.ConfiguredDomains())
@@ -153,7 +155,7 @@ func TestDomainRegisteredNotFound(t *testing.T) {
 	_, dm, _, done := newTestDomainManager(t, false, &pldconf.DomainManagerConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	})
@@ -168,7 +170,7 @@ func TestDomainMissingRegistryAddress(t *testing.T) {
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
 				Plugin: pldconf.PluginConfig{
-					Type:    string(tktypes.LibraryTypeCShared),
+					Type:    string(pldtypes.LibraryTypeCShared),
 					Library: "some/where",
 				},
 			},
@@ -176,34 +178,34 @@ func TestDomainMissingRegistryAddress(t *testing.T) {
 	}
 
 	mc := &mockComponents{
-		blockIndexer:     componentmocks.NewBlockIndexer(t),
-		stateStore:       componentmocks.NewStateManager(t),
+		blockIndexer:     blockindexermocks.NewBlockIndexer(t),
+		stateStore:       componentsmocks.NewStateManager(t),
 		ethClientFactory: ethclientmocks.NewEthClientFactory(t),
-		keyManager:       componentmocks.NewKeyManager(t),
-		txManager:        componentmocks.NewTXManager(t),
-		privateTxManager: componentmocks.NewPrivateTxManager(t),
-		transportMgr:     componentmocks.NewTransportManager(t),
+		keyManager:       componentsmocks.NewKeyManager(t),
+		txManager:        componentsmocks.NewTXManager(t),
+		privateTxManager: componentsmocks.NewPrivateTxManager(t),
+		transportMgr:     componentsmocks.NewTransportManager(t),
 	}
-	componentMocks := componentmocks.NewAllComponents(t)
-	componentMocks.On("EthClientFactory").Return(mc.ethClientFactory)
+	componentsmocks := componentsmocks.NewAllComponents(t)
+	componentsmocks.On("EthClientFactory").Return(mc.ethClientFactory)
 	mc.ethClientFactory.On("ChainID").Return(int64(12345)).Maybe()
 	mc.ethClientFactory.On("HTTPClient").Return(mc.ethClient).Maybe()
 	mc.ethClientFactory.On("WSClient").Return(mc.ethClient).Maybe()
-	componentMocks.On("BlockIndexer").Return(mc.blockIndexer)
+	componentsmocks.On("BlockIndexer").Return(mc.blockIndexer)
 	mc.keyManager.On("AddInMemorySigner", "domain", mock.Anything).Return().Maybe()
-	componentMocks.On("KeyManager").Return(mc.keyManager)
-	componentMocks.On("TxManager").Return(mc.txManager)
-	componentMocks.On("PrivateTxManager").Return(mc.privateTxManager)
-	componentMocks.On("TransportManager").Return(mc.transportMgr)
+	componentsmocks.On("KeyManager").Return(mc.keyManager)
+	componentsmocks.On("TxManager").Return(mc.txManager)
+	componentsmocks.On("PrivateTxManager").Return(mc.privateTxManager)
+	componentsmocks.On("TransportManager").Return(mc.transportMgr)
 
 	mp, err := mockpersistence.NewSQLMockProvider()
 	require.NoError(t, err)
-	componentMocks.On("StateManager").Return(mc.stateStore)
-	componentMocks.On("Persistence").Return(mp.P)
+	componentsmocks.On("StateManager").Return(mc.stateStore)
+	componentsmocks.On("Persistence").Return(mp.P)
 	dm := NewDomainManager(context.Background(), config)
-	_, err = dm.PreInit(componentMocks)
+	_, err = dm.PreInit(componentsmocks)
 	require.NoError(t, err)
-	err = dm.PostInit(componentMocks)
+	err = dm.PostInit(componentsmocks)
 	assert.Regexp(t, "PD011606", err)
 }
 
@@ -211,7 +213,7 @@ func TestGetDomainNotFound(t *testing.T) {
 	ctx, dm, _, done := newTestDomainManager(t, false, &pldconf.DomainManagerConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	})
@@ -220,10 +222,10 @@ func TestGetDomainNotFound(t *testing.T) {
 	_, err := dm.GetDomainByName(ctx, "wrong")
 	assert.Regexp(t, "PD011600", err)
 
-	_, err = dm.getDomainByAddress(ctx, tktypes.MustEthAddress(tktypes.RandHex(20)))
+	_, err = dm.getDomainByAddress(ctx, pldtypes.MustEthAddress(pldtypes.RandHex(20)))
 	assert.Regexp(t, "PD011600", err)
 
-	dc := dm.getDomainByAddressOrNil(tktypes.MustEthAddress(tktypes.RandHex(20)))
+	dc := dm.getDomainByAddressOrNil(pldtypes.MustEthAddress(pldtypes.RandHex(20)))
 	assert.Nil(t, dc)
 }
 
@@ -262,13 +264,13 @@ func TestMustParseLoaders(t *testing.T) {
 
 func TestWaitForDeployDomainNotFound(t *testing.T) {
 	reqID := uuid.New()
-	domainAddr := tktypes.RandAddress()
-	contractAddr := tktypes.RandAddress()
+	domainAddr := pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress()
 
 	ctx, dm, _, done := newTestDomainManager(t, false, &pldconf.DomainManagerConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	}, func(mc *mockComponents) {
@@ -305,7 +307,7 @@ func TestWaitForDeployNotADeploy(t *testing.T) {
 	ctx, dm, _, done := newTestDomainManager(t, false, &pldconf.DomainManagerConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	})
@@ -338,7 +340,7 @@ func TestWaitForDeployTimeout(t *testing.T) {
 	ctx, dm, _, done := newTestDomainManager(t, false, &pldconf.DomainManagerConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	})
@@ -354,7 +356,7 @@ func TestWaitForTransactionTimeout(t *testing.T) {
 	ctx, dm, _, done := newTestDomainManager(t, false, &pldconf.DomainManagerConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"domain1": {
-				RegistryAddress: tktypes.RandHex(20),
+				RegistryAddress: pldtypes.RandHex(20),
 			},
 		},
 	})

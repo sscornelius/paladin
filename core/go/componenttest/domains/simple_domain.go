@@ -29,22 +29,20 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/eip712"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/core/internal/components"
-	"github.com/kaleido-io/paladin/core/internal/keymanager"
 	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/query"
 	"github.com/kaleido-io/paladin/toolkit/pkg/algorithms"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
 	"github.com/kaleido-io/paladin/toolkit/pkg/plugintk"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/query"
 	"github.com/kaleido-io/paladin/toolkit/pkg/signpayloads"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/verifiers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 //go:embed abis/SimpleDomain.json
@@ -86,13 +84,13 @@ func toJSONString(t *testing.T, v interface{}) string {
 }
 
 type UTXOTransfer_Event struct {
-	TX        tktypes.Bytes32   `json:"txId"`
-	Inputs    []tktypes.Bytes32 `json:"inputs"`
-	Outputs   []tktypes.Bytes32 `json:"outputs"`
-	Signature tktypes.HexBytes  `json:"signature"`
+	TX        pldtypes.Bytes32   `json:"txId"`
+	Inputs    []pldtypes.Bytes32 `json:"inputs"`
+	Outputs   []pldtypes.Bytes32 `json:"outputs"`
+	Signature pldtypes.HexBytes  `json:"signature"`
 }
 
-func parseStatesFromEvent(txID tktypes.Bytes32, states []tktypes.Bytes32) []*prototk.StateUpdate {
+func parseStatesFromEvent(txID pldtypes.Bytes32, states []pldtypes.Bytes32) []*prototk.StateUpdate {
 	refs := make([]*prototk.StateUpdate, len(states))
 	for i, state := range states {
 		refs[i] = &prototk.StateUpdate{
@@ -104,7 +102,7 @@ func parseStatesFromEvent(txID tktypes.Bytes32, states []tktypes.Bytes32) []*pro
 }
 
 func mustParseBuildABI(buildJSON []byte) abi.ABI {
-	var buildParsed map[string]tktypes.RawJSON
+	var buildParsed map[string]pldtypes.RawJSON
 	var buildABI abi.ABI
 	err := json.Unmarshal(buildJSON, &buildParsed)
 	if err == nil {
@@ -116,9 +114,9 @@ func mustParseBuildABI(buildJSON []byte) abi.ABI {
 	return buildABI
 }
 
-func mustParseBuildBytecode(buildJSON []byte) tktypes.HexBytes {
-	var buildParsed map[string]tktypes.RawJSON
-	var byteCode tktypes.HexBytes
+func mustParseBuildBytecode(buildJSON []byte) pldtypes.HexBytes {
+	var buildParsed map[string]pldtypes.RawJSON
+	var byteCode pldtypes.HexBytes
 	err := json.Unmarshal(buildJSON, &buildParsed)
 	if err == nil {
 		err = json.Unmarshal(buildParsed["bytecode"], &byteCode)
@@ -129,7 +127,7 @@ func mustParseBuildBytecode(buildJSON []byte) tktypes.HexBytes {
 	return byteCode
 }
 
-func DeploySmartContract(t *testing.T, p persistence.Persistence, txm components.TXManager, km components.KeyManager) *tktypes.EthAddress {
+func DeploySmartContract(t *testing.T, p persistence.Persistence, txm components.TXManager, km components.KeyManager) *pldtypes.EthAddress {
 	ctx := context.Background()
 
 	simpleDomainABI := mustParseBuildABI(simpleDomainBuild)
@@ -137,8 +135,8 @@ func DeploySmartContract(t *testing.T, p persistence.Persistence, txm components
 
 	// In this test we deploy the factory in-line
 	var txIDs []uuid.UUID
-	err := keymanager.DBTransactionWithKRC(ctx, p, km, func(dbTX *gorm.DB, kr components.KeyResolver) (postCommit func(), err error) {
-		postCommit, txIDs, err = txm.SendTransactions(ctx, dbTX, kr, &pldapi.TransactionInput{
+	err := p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) (err error) {
+		txIDs, err = txm.SendTransactions(ctx, dbTX, &pldapi.TransactionInput{
 			TransactionBase: pldapi.TransactionBase{
 				Type: pldapi.TransactionTypePublic.Enum(),
 				From: "domain1_admin",
@@ -146,7 +144,7 @@ func DeploySmartContract(t *testing.T, p persistence.Persistence, txm components
 			ABI:      simpleDomainABI,
 			Bytecode: simpleDomainBytecode,
 		})
-		return postCommit, err
+		return err
 	})
 	require.NoError(t, err)
 	txID := txIDs[0]
@@ -311,7 +309,7 @@ type fakeTransferParser struct {
 
 // JSON structure for the state data
 type simpleTokenParser struct {
-	Salt   tktypes.HexBytes      `json:"salt"`
+	Salt   pldtypes.HexBytes     `json:"salt"`
 	Owner  ethtypes.Address0xHex `json:"owner"`
 	Amount *ethtypes.HexInteger  `json:"amount"`
 }
@@ -383,20 +381,20 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 					Statements: query.Statements{
 						Ops: query.Ops{
 							Eq: []*query.OpSingleVal{
-								{Op: query.Op{Field: "owner"}, Value: tktypes.JSONString(fromAddr.String())},
+								{Op: query.Op{Field: "owner"}, Value: pldtypes.JSONString(fromAddr.String())},
 							},
 						},
 					},
 				}
 				if lastStateTimestamp > 0 {
 					jq.GT = []*query.OpSingleVal{
-						{Op: query.Op{Field: ".created"}, Value: tktypes.RawJSON(strconv.FormatInt(lastStateTimestamp, 10))},
+						{Op: query.Op{Field: ".created"}, Value: pldtypes.RawJSON(strconv.FormatInt(lastStateTimestamp, 10))},
 					}
 				}
 				res, err := callbacks.FindAvailableStates(ctx, &prototk.FindAvailableStatesRequest{
 					StateQueryContext: stateQueryContext,
 					SchemaId:          simpleTokenSchemaID,
-					QueryJson:         tktypes.JSONString(jq).String(),
+					QueryJson:         pldtypes.JSONString(jq).String(),
 				})
 				if err != nil {
 					return nil, nil, nil, "", err
@@ -460,7 +458,7 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 			return
 		}
 
-		typedDataV4TransferWithSalts := func(contract *ethtypes.Address0xHex, inputs, outputs []*simpleTokenParser) (tktypes.HexBytes, error) {
+		typedDataV4TransferWithSalts := func(contract *ethtypes.Address0xHex, inputs, outputs []*simpleTokenParser) (pldtypes.HexBytes, error) {
 			typeSet := eip712.TypeSet{
 				"FakeTransfer": {
 					{Name: "inputs", Type: "Coin[]"},
@@ -508,7 +506,7 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 					"outputs": messageOutputs,
 				},
 			})
-			return tktypes.HexBytes(tdv4), err
+			return pldtypes.HexBytes(tdv4), err
 		}
 
 		return &plugintk.DomainAPIBase{Functions: &plugintk.DomainAPIFunctions{
@@ -641,7 +639,7 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 					Signer: confutil.P(fmt.Sprintf("domain1.transactions.%s", req.Transaction.TransactionId)),
 					Transaction: &prototk.PreparedTransaction{
 						FunctionAbiJson: toJSONString(t, simpleDomainABI.Functions()["newSimpleTokenNotarized"]),
-						ParamsJson:      tktypes.JSONString(params).String(),
+						ParamsJson:      pldtypes.JSONString(params).String(),
 					},
 				}, nil
 			},
@@ -649,11 +647,11 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 			InitContract: func(ctx context.Context, icr *prototk.InitContractRequest) (*prototk.InitContractResponse, error) {
 
 				configValues, err := contractDataABI.DecodeABIData(icr.ContractConfig, 0)
-				str := tktypes.HexBytes(icr.ContractConfig).HexString0xPrefix()
+				str := pldtypes.HexBytes(icr.ContractConfig).HexString0xPrefix()
 				assert.NotEqual(t, "", str)
 				require.NoError(t, err)
 
-				configJSON, err := tktypes.StandardABISerializer().SerializeJSON(configValues)
+				configJSON, err := pldtypes.StandardABISerializer().SerializeJSON(configValues)
 				require.NoError(t, err)
 				contractConfig := &prototk.ContractConfig{
 					ContractConfigJson: string(configJSON),
@@ -769,7 +767,7 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 				if fromAddr != nil && toKeep.Sign() > 0 {
 					// Generate a state to keep for ourselves
 					coin := simpleTokenParser{
-						Salt:   tktypes.RandBytes(32),
+						Salt:   pldtypes.RandBytes(32),
 						Owner:  *fromAddr,
 						Amount: (*ethtypes.HexInteger)(toKeep),
 					}
@@ -788,7 +786,7 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 				if toAddr != nil && amount.Sign() > 0 {
 					// Generate the coin to transfer
 					coin := simpleTokenParser{
-						Salt:   tktypes.RandBytes(32),
+						Salt:   pldtypes.RandBytes(32),
 						Owner:  *toAddr,
 						Amount: (*ethtypes.HexInteger)(amount),
 					}
@@ -998,7 +996,7 @@ func SimpleTokenDomain(t *testing.T, ctx context.Context) plugintk.PluginBase {
 			},
 
 			PrepareTransaction: func(ctx context.Context, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
-				var signerSignature tktypes.HexBytes
+				var signerSignature pldtypes.HexBytes
 				for _, att := range req.AttestationResult {
 					if att.AttestationType == prototk.AttestationType_SIGN && att.Name == "sender" {
 						signerSignature = att.Payload

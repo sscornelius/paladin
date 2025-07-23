@@ -45,6 +45,10 @@ configurations {
         canBeConsumed = false
         canBeResolved = true
     }
+    poseidonArtifacts {
+        canBeConsumed = false
+        canBeResolved = true
+    }
 }
 
 dependencies {
@@ -54,6 +58,7 @@ dependencies {
     notoGo project(path: ":domains:noto", configuration: "goSource")
     zetoGo project(path: ":domains:zeto", configuration: "goSource")
     zetoArtifacts project(path: ":domains:zeto", configuration: "zetoArtifacts")
+    poseidonArtifacts project(path: ":domains:zeto", configuration: "poseidonArtifacts")
 }
 
 task copySolidity(type: Copy) {
@@ -63,7 +68,7 @@ task copySolidity(type: Copy) {
         include 'contracts/domains/noto/NotoFactory.sol/NotoFactory.json'
         include 'contracts/domains/zeto/ZetoFactory.sol/ZetoFactory.json'
         include 'contracts/shared/Atom.sol/Atom.json'
-        include 'contracts/shared/Atom.sol/AtomFactory.json'
+        include 'contracts/shared/AtomFactory.sol/AtomFactory.json'
         include 'contracts/private/Swap.sol/Swap.json'
         include 'contracts/testcontracts/NotoTrackerPublicERC20.sol/NotoTrackerPublicERC20.json'
     }
@@ -75,11 +80,18 @@ task copySolidity(type: Copy) {
         exclude '**/*.dbg.json'
     }
 
+    inputs.files(configurations.poseidonArtifacts)
+    from fileTree(configurations.poseidonArtifacts.asPath) {
+        include '**/Poseidon2.json'
+        include '**/Poseidon3.json'
+    }
+
     into 'helpers/abis'
 
     // Flatten all paths into the destination folder
     eachFile { path = name }
     includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
 task test(type: Exec, dependsOn: [":core:go:makeMocks"]) {
@@ -98,10 +110,7 @@ task test(type: Exec, dependsOn: [":core:go:makeMocks"]) {
     args '-v'
     args '-cover'
     args '-covermode=atomic'
-    args '-timeout=90s'
-    if (project.findProperty('verboseTests') == 'true') {
-        args '-v'
-    }
+    args '-timeout=480s'
     args "-test.gocoverdir=${projectDir}/coverage"
 
     dependsOn ':testinfra:startTestInfra'

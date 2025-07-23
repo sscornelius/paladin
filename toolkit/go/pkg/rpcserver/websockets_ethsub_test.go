@@ -24,10 +24,9 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/hyperledger/firefly-common/pkg/wsclient"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
-	"github.com/kaleido-io/paladin/toolkit/pkg/rpcclient"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/rpcclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,7 +74,7 @@ type ethSubscription struct {
 	es        *EthSubscribe
 	ctrl      RPCAsyncControl
 	eventType string
-	params    []tktypes.RawJSON
+	params    []pldtypes.RawJSON
 }
 
 func (es *EthSubscribe) HandleStart(ctx context.Context, req *rpcclient.RPCRequest, ctrl RPCAsyncControl) (RPCAsyncInstance, *rpcclient.RPCResponse) {
@@ -101,7 +100,7 @@ func (es *EthSubscribe) HandleStart(ctx context.Context, req *rpcclient.RPCReque
 	return sub, &rpcclient.RPCResponse{
 		JSONRpc: "2.0",
 		ID:      req.ID,
-		Result:  tktypes.JSONString(ctrl.ID()),
+		Result:  pldtypes.JSONString(ctrl.ID()),
 	}
 }
 
@@ -136,7 +135,7 @@ func (es *EthSubscribe) HandleLifecycle(ctx context.Context, req *rpcclient.RPCR
 	return &rpcclient.RPCResponse{
 		JSONRpc: "2.0",
 		ID:      req.ID,
-		Result:  tktypes.JSONString(sub != nil),
+		Result:  pldtypes.JSONString(sub != nil),
 	}
 
 }
@@ -162,7 +161,10 @@ func TestWebSocketEthSubscribeUnsubscribe(t *testing.T) {
 	ethSubs := NewEthSubscribe()
 	s.Register(NewRPCModule("eth").AddAsync(ethSubs.RPCAsyncHandler()))
 
-	client := rpcclient.WrapWSConfig(&wsclient.WSConfig{WebSocketURL: url, DisableReconnect: true})
+	wsConfig := &pldconf.WSClientConfig{}
+	wsConfig.URL = url
+	client := rpcclient.WrapWSConfig(wsConfig)
+
 	defer client.Close()
 	err := client.Connect(context.Background())
 	require.NoError(t, err)
@@ -178,9 +180,9 @@ func TestWebSocketEthSubscribeUnsubscribe(t *testing.T) {
 		}
 	}
 
-	rpcErr := client.CallRPC(context.Background(), &tktypes.RawJSON{}, "eth_subscribe")
+	rpcErr := client.CallRPC(context.Background(), &pldtypes.RawJSON{}, "eth_subscribe")
 	assert.Regexp(t, "eth_subscribe requires a type parameter", rpcErr)
-	rpcErr = client.CallRPC(context.Background(), &tktypes.RawJSON{}, "eth_unsubscribe")
+	rpcErr = client.CallRPC(context.Background(), &pldtypes.RawJSON{}, "eth_unsubscribe")
 	assert.Regexp(t, "eth_unsubscribe requires single parameter", rpcErr)
 
 	sub1, rpcErr := client.Subscribe(context.Background(), rpcclient.EthSubscribeConfig(), "myEvents", map[string]interface{}{"extra": "params"})
@@ -199,7 +201,7 @@ func TestWebSocketEthSubscribeUnsubscribe(t *testing.T) {
 
 	notification := <-sub1.Notifications()
 	assert.NotNil(t, notification)
-	assert.JSONEq(t, `{"some": "thing"}`, notification.Result.String())
+	assert.JSONEq(t, `{"some": "thing"}`, notification.GetResult().String())
 
 	rpcErr = sub1.Unsubscribe(context.Background())
 	assert.Nil(t, rpcErr)

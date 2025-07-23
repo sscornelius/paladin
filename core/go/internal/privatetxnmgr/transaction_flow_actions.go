@@ -21,12 +21,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
 	"github.com/kaleido-io/paladin/core/internal/msgs"
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/prototk"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 )
 
 func (tf *transactionFlow) logActionDebug(ctx context.Context, msg string) {
@@ -223,7 +223,7 @@ func (tf *transactionFlow) setTransactionSigner(ctx context.Context) (reDelegate
 
 	// Ok we have a submission constraint to use the signing key of an endorser to submit.
 	// Check it is a local identity. If not we have a re-delegation scenario.
-	node, err := tktypes.PrivateIdentityLocator(endorserSubmitSigner).Node(ctx, false /* must be fully qualified in this scenario */)
+	node, err := pldtypes.PrivateIdentityLocator(endorserSubmitSigner).Node(ctx, false /* must be fully qualified in this scenario */)
 	if err != nil {
 		return false, i18n.WrapError(ctx, err, msgs.MsgDomainEndorserSubmitConfigClash,
 			endorserSubmitSigner, contractConf.CoordinatorSelection, contractConf.SubmitterSelection)
@@ -259,10 +259,16 @@ func (tf *transactionFlow) finalize(ctx context.Context) {
 	//flush that to the txmgr database
 	// so that the user can see that it is reverted and so that we stop retrying to assemble and endorse it
 
+	var fromIdentity string
+	preAssembly := tf.transaction.PreAssembly
+	if preAssembly != nil && preAssembly.TransactionSpecification != nil {
+		fromIdentity = tf.transaction.PreAssembly.TransactionSpecification.From
+	}
 	tf.syncPoints.QueueTransactionFinalize(
 		ctx,
 		tf.transaction.Domain,
 		tf.domainAPI.Address(),
+		fromIdentity,
 		tf.transaction.ID,
 		tf.finalizeRevertReason,
 		func(ctx context.Context) {
@@ -335,7 +341,7 @@ func (tf *transactionFlow) delegateIfRequired(ctx context.Context) (doContinue b
 	//then we need to either claw back that delegation or wait until the delegate has realized that they are no longer the coordinator and returns / forwards the responsibility for this transaction
 	tf.status = "delegating"
 	// ensure that the From field is fully qualified before sending to the delegate so that they can send assemble requests to the correct place
-	fullQualifiedFrom, err := tktypes.PrivateIdentityLocator(tf.transaction.PreAssembly.TransactionSpecification.From).FullyQualified(ctx, tf.nodeName)
+	fullQualifiedFrom, err := pldtypes.PrivateIdentityLocator(tf.transaction.PreAssembly.TransactionSpecification.From).FullyQualified(ctx, tf.nodeName)
 	if err != nil {
 		//this can only mean that the From field is an invalid identity locator and we should never have got this far
 		// unless there is a serious programming error or the memory has been corrupted
@@ -379,7 +385,7 @@ func (tf *transactionFlow) writeAndLockStates(ctx context.Context) {
 		// We need to write the potential states to the domain before we can sign or endorse the transaction
 		// but there is no point in doing that until we are sure that the transaction is going to be coordinated locally
 		// so this is the earliest, and latest, point in the flow that we can do this
-		readTX := tf.components.Persistence().DB() // no DB transaction required here for the reads from the DB (writes happen on syncpoint flusher)
+		readTX := tf.components.Persistence().NOTX() // no DB transaction required here for the reads from the DB (writes happen on syncpoint flusher)
 		err := tf.domainAPI.WritePotentialStates(tf.domainContext, readTX, tf.transaction)
 		if err != nil {
 			//Any error from WritePotentialStates is likely to be caused by an invalid init or assemble of the transaction
@@ -394,8 +400,8 @@ func (tf *transactionFlow) writeAndLockStates(ctx context.Context) {
 			tf.logActionDebugf(ctx, "Potential states written %s", tf.domainContext.Info().ID)
 		}
 	}
-	if len(tf.transaction.PostAssembly.InputStates) > 0 {
-		readTX := tf.components.Persistence().DB() // no DB transaction required here for the reads from the DB (writes happen on syncpoint flusher)
+	if len(tf.transaction.PostAssembly.InputStates) > 0 && tf.transaction.Intent == prototk.TransactionSpecification_SEND_TRANSACTION {
+		readTX := tf.components.Persistence().NOTX() // no DB transaction required here for the reads from the DB (writes happen on syncpoint flusher)
 
 		err := tf.domainAPI.LockStates(tf.domainContext, readTX, tf.transaction)
 		if err != nil {
@@ -436,7 +442,7 @@ func (tf *transactionFlow) requestAssemble(ctx context.Context) {
 		err = i18n.NewError(ctx, msgs.MsgPrivateTxMgrAssembleRequestInvalid, tf.transaction.ID)
 	}
 	if err == nil {
-		assemblingNode, err = tktypes.PrivateIdentityLocator(preAssemblyCopy.TransactionSpecification.From).Node(ctx, true)
+		assemblingNode, err = pldtypes.PrivateIdentityLocator(preAssemblyCopy.TransactionSpecification.From).Node(ctx, true)
 	}
 	if err != nil {
 		tf.publisher.PublishTransactionAssembleFailedEvent(
@@ -463,13 +469,13 @@ func (tf *transactionFlow) requestSignature(ctx context.Context, attRequest *pro
 	keyMgr := tf.components.KeyManager()
 
 	unqualifiedLookup := partyName
-	signerNode, err := tktypes.PrivateIdentityLocator(partyName).Node(ctx, true)
+	signerNode, err := pldtypes.PrivateIdentityLocator(partyName).Node(ctx, true)
 	if signerNode != "" && signerNode != tf.nodeName {
 		log.L(ctx).Debugf("Requesting signature from a remote identity %s for %s", partyName, attRequest.Name)
 		err = i18n.NewError(ctx, msgs.MsgPrivateTxManagerSignRemoteError, partyName)
 	}
 	if err == nil {
-		unqualifiedLookup, err = tktypes.PrivateIdentityLocator(partyName).Identity(ctx)
+		unqualifiedLookup, err = pldtypes.PrivateIdentityLocator(partyName).Identity(ctx)
 	}
 	var resolvedKey *pldapi.KeyMappingAndVerifier
 	if err == nil {
@@ -540,7 +546,7 @@ func (tf *transactionFlow) requestSignatures(ctx context.Context) {
 
 func (tf *transactionFlow) requestEndorsement(ctx context.Context, idempotencyKey string, party string, attRequest *prototk.AttestationRequest) {
 
-	partyLocator := tktypes.PrivateIdentityLocator(party)
+	partyLocator := pldtypes.PrivateIdentityLocator(party)
 	partyNode, err := partyLocator.Node(ctx, true)
 	if err != nil {
 		log.L(ctx).Errorf("Failed to get node name from locator %s: %s", party, err)
@@ -653,7 +659,12 @@ func (tf *transactionFlow) requestVerifierResolution(ctx context.Context) {
 	if tf.transaction.PreAssembly.Verifiers == nil {
 		tf.transaction.PreAssembly.Verifiers = make([]*prototk.ResolvedVerifier, 0, len(tf.transaction.PreAssembly.RequiredVerifiers))
 	}
-	for _, v := range tf.transaction.PreAssembly.RequiredVerifiers {
+	// having duplicate requests for the same verifier can cause the same transaction to be sent multiple times
+	// note that we leave the duplicates, if any, alone in the transaction object
+	// and only dedup the requests that we send to the identity resolver
+	requiredVerifiers := dedupResolveVerifierRequests(tf.transaction.PreAssembly.RequiredVerifiers)
+
+	for _, v := range requiredVerifiers {
 		tf.logActionDebugf(ctx, "Resolving verifier %s", v.Lookup)
 		tf.identityResolver.ResolveVerifierAsync(
 			ctx,
@@ -671,4 +682,17 @@ func (tf *transactionFlow) requestVerifierResolution(ctx context.Context) {
 	}
 	//TODO this needs to be more precise (like which verifiers have been sent / pending / stale  etc)
 	tf.requestedVerifierResolution = true
+}
+
+func dedupResolveVerifierRequests(requests []*prototk.ResolveVerifierRequest) []*prototk.ResolveVerifierRequest {
+	seen := make(map[string]struct{})
+	var dedupedRequests []*prototk.ResolveVerifierRequest
+	for _, request := range requests {
+		key := fmt.Sprintf("%s:%s:%s", request.Lookup, request.VerifierType, request.Algorithm)
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			dedupedRequests = append(dedupedRequests, request)
+		}
+	}
+	return dedupedRequests
 }

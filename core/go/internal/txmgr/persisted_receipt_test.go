@@ -16,6 +16,7 @@
 package txmgr
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -24,14 +25,14 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
-	"github.com/kaleido-io/paladin/core/mocks/componentmocks"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/core/mocks/componentsmocks"
+	"github.com/kaleido-io/paladin/core/pkg/persistence"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 func TestFinalizeTransactionsNoOp(t *testing.T) {
@@ -41,9 +42,8 @@ func TestFinalizeTransactionsNoOp(t *testing.T) {
 	)
 	defer done()
 
-	fn, err := txm.FinalizeTransactions(ctx, txm.p.DB(), nil)
+	err := txm.FinalizeTransactions(ctx, txm.p.NOTX(), nil)
 	assert.NoError(t, err)
-	fn()
 
 }
 
@@ -55,7 +55,7 @@ func TestFinalizeTransactionsSuccessWithFailure(t *testing.T) {
 	)
 	defer done()
 
-	_, err := txm.FinalizeTransactions(ctx, txm.p.DB(), []*components.ReceiptInput{
+	err := txm.FinalizeTransactions(ctx, txm.p.NOTX(), []*components.ReceiptInput{
 		{TransactionID: txID, ReceiptType: components.RT_Success,
 			FailureMessage: "not empty",
 		},
@@ -71,7 +71,7 @@ func TestFinalizeTransactionsBadType(t *testing.T) {
 	)
 	defer done()
 
-	_, err := txm.FinalizeTransactions(ctx, txm.p.DB(), []*components.ReceiptInput{
+	err := txm.FinalizeTransactions(ctx, txm.p.NOTX(), []*components.ReceiptInput{
 		{TransactionID: txID, ReceiptType: components.ReceiptType(42)}})
 	assert.Regexp(t, "PD012213", err)
 
@@ -85,7 +85,7 @@ func TestFinalizeTransactionsFailedWithMessageNoMessage(t *testing.T) {
 	)
 	defer done()
 
-	_, err := txm.FinalizeTransactions(ctx, txm.p.DB(), []*components.ReceiptInput{
+	err := txm.FinalizeTransactions(ctx, txm.p.NOTX(), []*components.ReceiptInput{
 		{TransactionID: txID, ReceiptType: components.RT_FailedWithMessage}})
 	assert.Regexp(t, "PD012213", err)
 
@@ -99,7 +99,7 @@ func TestFinalizeTransactionsFailedWithRevertDataWithMessage(t *testing.T) {
 	)
 	defer done()
 
-	_, err := txm.FinalizeTransactions(ctx, txm.p.DB(), []*components.ReceiptInput{
+	err := txm.FinalizeTransactions(ctx, txm.p.NOTX(), []*components.ReceiptInput{
 		{TransactionID: txID, ReceiptType: components.RT_FailedOnChainWithRevertData,
 			FailureMessage: "not empty"}})
 	assert.Regexp(t, "PD012213", err)
@@ -113,55 +113,29 @@ func TestFinalizeTransactionsInsertFail(t *testing.T) {
 		mockEmptyReceiptListeners,
 		func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
 			mc.db.ExpectBegin()
-			mc.db.ExpectExec("INSERT.*transaction_receipts").WillReturnError(fmt.Errorf("pop"))
+			mc.db.ExpectQuery("INSERT.*transaction_receipts").WillReturnError(fmt.Errorf("pop"))
 		})
 	defer done()
 
-	err := txm.p.DB().Transaction(func(tx *gorm.DB) error {
-		_, err := txm.FinalizeTransactions(ctx, tx, []*components.ReceiptInput{
+	err := txm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
+		return txm.FinalizeTransactions(ctx, dbTX, []*components.ReceiptInput{
 			{TransactionID: txID, ReceiptType: components.RT_FailedWithMessage,
 				FailureMessage: "something went wrong"},
 		})
-		return err
 	})
 	assert.Regexp(t, "pop", err)
 
 }
 
-func mockKeyResolutionContextOk(t *testing.T) func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
-	return func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
-		_ = mockKeyResolver(t, mc)
-	}
-}
-
-func mockKeyResolver(t *testing.T, mc *mockComponents) *componentmocks.KeyResolver {
-	krc := componentmocks.NewKeyResolutionContext(t)
-	kr := componentmocks.NewKeyResolver(t)
-	krc.On("KeyResolver", mock.Anything).Return(kr)
-	krc.On("PreCommit").Return(nil)
-	krc.On("Close", mock.Anything).Return()
-	mc.keyManager.On("NewKeyResolutionContext", mock.Anything).Return(krc)
+func mockKeyResolver(t *testing.T, mc *mockComponents) *componentsmocks.KeyResolver {
+	kr := componentsmocks.NewKeyResolver(t)
+	mc.keyManager.On("KeyResolverForDBTX", mock.Anything).Return(kr)
 	return kr
 }
 
-func mockKeyResolutionContextFail(t *testing.T) func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
+func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ...pldtypes.EthAddress) func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
 	return func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
-		_ = mockKeyResolverForFail(t, mc)
-	}
-}
-
-func mockKeyResolverForFail(t *testing.T, mc *mockComponents) *componentmocks.KeyResolver {
-	krc := componentmocks.NewKeyResolutionContext(t)
-	kr := componentmocks.NewKeyResolver(t)
-	krc.On("KeyResolver", mock.Anything).Return(kr)
-	krc.On("Close", false).Return()
-	mc.keyManager.On("NewKeyResolutionContext", mock.Anything).Return(krc)
-	return kr
-}
-
-func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ...tktypes.EthAddress) func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
-	return func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
-		mgsc := mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, mock.MatchedBy(func(a tktypes.EthAddress) bool {
+		mgsc := mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, mock.MatchedBy(func(a pldtypes.EthAddress) bool {
 			if len(contractAddrs) == 0 {
 				return true
 			}
@@ -173,11 +147,11 @@ func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ..
 			return false
 		}))
 		mgsc.Run(func(args mock.Arguments) {
-			mpsc := componentmocks.NewDomainSmartContract(t)
-			mdmn := componentmocks.NewDomain(t)
+			mpsc := componentsmocks.NewDomainSmartContract(t)
+			mdmn := componentsmocks.NewDomain(t)
 			mdmn.On("Name").Return(domainName)
 			mpsc.On("Domain").Return(mdmn)
-			mpsc.On("Address").Return(args[2].(tktypes.EthAddress)).Maybe()
+			mpsc.On("Address").Return(args[2].(pldtypes.EthAddress)).Maybe()
 			mgsc.Return(mpsc, nil)
 		})
 	}
@@ -185,7 +159,7 @@ func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ..
 
 func TestFinalizeTransactionsInsertOkOffChain(t *testing.T) {
 
-	ctx, txm, done := newTestTransactionManager(t, true, mockKeyResolutionContextOk(t), mockDomainContractResolve(t, "domain1"), func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
+	ctx, txm, done := newTestTransactionManager(t, true, mockDomainContractResolve(t, "domain1"), func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
 		mc.privateTxMgr.On("HandleNewTx", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	})
 	defer done()
@@ -199,25 +173,22 @@ func TestFinalizeTransactionsInsertOkOffChain(t *testing.T) {
 			From:     "me",
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Function: "doIt",
-			To:       tktypes.MustEthAddress(tktypes.RandHex(20)),
-			Data:     tktypes.JSONString(tktypes.HexBytes(callData)),
+			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
 	})
 	require.NoError(t, err)
 
-	var postCommit func()
-	err = txm.p.DB().Transaction(func(tx *gorm.DB) (err error) {
-		postCommit, err = txm.FinalizeTransactions(ctx, tx, []*components.ReceiptInput{
+	err = txm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) (err error) {
+		return txm.FinalizeTransactions(ctx, dbTX, []*components.ReceiptInput{
 			{
 				TransactionID: *txID,
 				ReceiptType:   components.RT_FailedOnChainWithRevertData,
 			},
 		})
-		return err
 	})
 	require.NoError(t, err)
-	postCommit()
 
 	receipt, err := txm.GetTransactionReceiptByID(ctx, *txID)
 	require.NoError(t, err)
@@ -226,20 +197,20 @@ func TestFinalizeTransactionsInsertOkOffChain(t *testing.T) {
 		"id":"%s",
 		"sequence":%d,
 		"failureMessage":"PD012214: Unable to decode revert data (no revert data available)"
-	}`, txID, receipt.Sequence), string(tktypes.JSONString(receipt)))
+	}`, txID, receipt.Sequence), string(pldtypes.JSONString(receipt)))
 
 }
 
 func TestFinalizeTransactionsInsertOkEvent(t *testing.T) {
 
-	ctx, txm, done := newTestTransactionManager(t, true, mockKeyResolutionContextOk(t), mockDomainContractResolve(t, "domain1"), func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
+	ctx, txm, done := newTestTransactionManager(t, true, mockDomainContractResolve(t, "domain1"), func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
 		mc.privateTxMgr.On("HandleNewTx", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		mc.stateMgr.On("GetTransactionStates", mock.Anything, mock.Anything, mock.Anything).Return(
 			&pldapi.TransactionStates{None: true}, nil,
 		)
 
-		md := componentmocks.NewDomain(t)
+		md := componentsmocks.NewDomain(t)
 		mc.domainManager.On("GetDomainByName", mock.Anything, "domain1").Return(md, nil)
 		md.On("BuildDomainReceipt", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil, fmt.Errorf("not available"))
 	})
@@ -255,34 +226,31 @@ func TestFinalizeTransactionsInsertOkEvent(t *testing.T) {
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Domain:   "domain1",
 			Function: "doIt",
-			To:       tktypes.MustEthAddress(tktypes.RandHex(20)),
-			Data:     tktypes.JSONString(tktypes.HexBytes(callData)),
+			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
 	})
 	assert.NoError(t, err)
 
-	var postCommit func()
-	err = txm.p.DB().Transaction(func(tx *gorm.DB) (err error) {
-		postCommit, err = txm.FinalizeTransactions(ctx, tx, []*components.ReceiptInput{
+	err = txm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) (err error) {
+		return txm.FinalizeTransactions(ctx, dbTX, []*components.ReceiptInput{
 			{
 				TransactionID: *txID,
 				Domain:        "domain1",
 				ReceiptType:   components.RT_Success,
-				OnChain: tktypes.OnChainLocation{
-					Type:             tktypes.OnChainEvent,
-					TransactionHash:  tktypes.MustParseBytes32("d0561b310b77e47bc16fb3c40d48b72255b1748efeecf7452373dfce8045af30"),
+				OnChain: pldtypes.OnChainLocation{
+					Type:             pldtypes.OnChainEvent,
+					TransactionHash:  pldtypes.MustParseBytes32("d0561b310b77e47bc16fb3c40d48b72255b1748efeecf7452373dfce8045af30"),
 					BlockNumber:      12345,
 					TransactionIndex: 10,
 					LogIndex:         5,
-					Source:           tktypes.MustEthAddress("0x3f9f796ff55589dd2358c458f185bbed357c0b6e"),
+					Source:           pldtypes.MustEthAddress("0x3f9f796ff55589dd2358c458f185bbed357c0b6e"),
 				},
 			},
 		})
-		return err
 	})
 	require.NoError(t, err)
-	postCommit()
 
 	receipt, err := txm.GetTransactionReceiptByIDFull(ctx, *txID)
 	require.NoError(t, err)
@@ -300,7 +268,7 @@ func TestFinalizeTransactionsInsertOkEvent(t *testing.T) {
 		"transactionIndex":10,
 		"states": {"none": true},
 		"domainReceiptError": "not available"
-	}`, txID, receipt.Sequence), tktypes.JSONString(receipt).Pretty())
+	}`, txID, receipt.Sequence), pldtypes.JSONString(receipt).Pretty())
 
 }
 
@@ -325,7 +293,7 @@ func TestCalculateRevertErrorQueryFail(t *testing.T) {
 		})
 	defer done()
 
-	err := txm.CalculateRevertError(ctx, txm.p.DB(), []byte("any data"))
+	err := txm.CalculateRevertError(ctx, txm.p.NOTX(), []byte("any data"))
 	assert.Regexp(t, "PD012221.*pop", err)
 
 }
@@ -339,7 +307,7 @@ func TestCalculateRevertErrorDecodeFail(t *testing.T) {
 		})
 	defer done()
 
-	err := txm.CalculateRevertError(ctx, txm.p.DB(), []byte("any data"))
+	err := txm.CalculateRevertError(ctx, txm.p.NOTX(), []byte("any data"))
 	assert.Regexp(t, "PD012221", err)
 
 }
@@ -389,7 +357,7 @@ func TestGetDomainReceiptFail(t *testing.T) {
 }
 
 func TestDecodeRevertErrorBadSerializer(t *testing.T) {
-	revertReasonTooSmallHex := tktypes.MustParseHexBytes("0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001d5468652073746f7265642076616c756520697320746f6f20736d616c6c000000")
+	revertReasonTooSmallHex := pldtypes.MustParseHexBytes("0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001d5468652073746f7265642076616c756520697320746f6f20736d616c6c000000")
 
 	ctx, txm, done := newTestTransactionManager(t, false,
 		mockEmptyReceiptListeners,
@@ -398,7 +366,7 @@ func TestDecodeRevertErrorBadSerializer(t *testing.T) {
 		})
 	defer done()
 
-	_, err := txm.DecodeRevertError(ctx, txm.p.DB(), revertReasonTooSmallHex, "wrong")
+	_, err := txm.DecodeRevertError(ctx, txm.p.NOTX(), revertReasonTooSmallHex, "wrong")
 	assert.Regexp(t, "PD020015", err)
 
 }
@@ -414,27 +382,26 @@ func TestDecodeCall(t *testing.T) {
 	ctx, txm, done := newTestTransactionManager(t, true)
 	defer done()
 
-	postCommit, _, err := txm.storeABI(ctx, txm.p.DB(), sampleABI)
+	_, err := txm.storeABINewDBTX(ctx, sampleABI)
 	require.NoError(t, err)
-	postCommit()
 
 	validCall, err := sampleABI.Functions()["set"].EncodeCallDataJSON([]byte(`[12345]`))
 	require.NoError(t, err)
 
-	decoded, err := txm.DecodeCall(ctx, txm.p.DB(), validCall, "")
+	decoded, err := txm.DecodeCall(ctx, txm.p.NOTX(), validCall, "")
 	assert.NoError(t, err)
 	require.JSONEq(t, `{"newValue": "12345"}`, string(decoded.Data))
 	require.Equal(t, `set(uint256)`, string(decoded.Signature))
 
 	invalidCall := append(sampleABI.Functions()["set"].FunctionSelectorBytes(), []byte{0x00}...)
-	_, err = txm.DecodeCall(ctx, txm.p.DB(), tktypes.HexBytes(invalidCall), "")
+	_, err = txm.DecodeCall(ctx, txm.p.NOTX(), pldtypes.HexBytes(invalidCall), "")
 	assert.Regexp(t, "PD012227.*1 matched function selector", err)
 
 	short := []byte{0xfe, 0xed}
-	_, err = txm.DecodeCall(ctx, txm.p.DB(), tktypes.HexBytes(short), "")
+	_, err = txm.DecodeCall(ctx, txm.p.NOTX(), pldtypes.HexBytes(short), "")
 	assert.Regexp(t, "PD012226", err)
 
-	_, err = txm.DecodeCall(ctx, txm.p.DB(), validCall, "wrong")
+	_, err = txm.DecodeCall(ctx, txm.p.NOTX(), validCall, "wrong")
 	assert.Regexp(t, "PD020015", err)
 
 }
@@ -450,29 +417,28 @@ func TestDecodeEvent(t *testing.T) {
 	ctx, txm, done := newTestTransactionManager(t, true)
 	defer done()
 
-	postCommit, _, err := txm.storeABI(ctx, txm.p.DB(), sampleABI)
+	_, err := txm.storeABINewDBTX(ctx, sampleABI)
 	require.NoError(t, err)
-	postCommit()
 
-	validTopic0 := tktypes.Bytes32(sampleABI.Events()["Updated"].SignatureHashBytes())
+	validTopic0 := pldtypes.Bytes32(sampleABI.Events()["Updated"].SignatureHashBytes())
 	validTopic1, err := (&abi.ParameterArray{{Type: "uint256"}}).EncodeABIDataJSON([]byte(`["12345"]`))
 	require.NoError(t, err)
 
-	decoded, err := txm.DecodeEvent(ctx, txm.p.DB(), []tktypes.Bytes32{validTopic0, tktypes.Bytes32(validTopic1)}, []byte{}, "")
+	decoded, err := txm.DecodeEvent(ctx, txm.p.NOTX(), []pldtypes.Bytes32{validTopic0, pldtypes.Bytes32(validTopic1)}, []byte{}, "")
 	assert.NoError(t, err)
 	require.JSONEq(t, `{"newValue": "12345"}`, string(decoded.Data))
 	require.Equal(t, `Updated(uint256)`, string(decoded.Signature))
 
-	_, err = txm.DecodeEvent(ctx, txm.p.DB(), []tktypes.Bytes32{validTopic0 /* missing 2nd topic*/}, []byte{}, "")
+	_, err = txm.DecodeEvent(ctx, txm.p.NOTX(), []pldtypes.Bytes32{validTopic0 /* missing 2nd topic*/}, []byte{}, "")
 	assert.Regexp(t, "PD012229.*1 matched signature", err)
 
-	_, err = txm.DecodeEvent(ctx, txm.p.DB(), []tktypes.Bytes32{tktypes.Bytes32(tktypes.RandBytes(32)) /* unknown topic */}, []byte{}, "")
+	_, err = txm.DecodeEvent(ctx, txm.p.NOTX(), []pldtypes.Bytes32{pldtypes.RandBytes32() /* unknown topic */}, []byte{}, "")
 	assert.Regexp(t, "PD012229", err)
 
-	_, err = txm.DecodeEvent(ctx, txm.p.DB(), []tktypes.Bytes32{ /* no topics */ }, []byte{}, "")
+	_, err = txm.DecodeEvent(ctx, txm.p.NOTX(), []pldtypes.Bytes32{ /* no topics */ }, []byte{}, "")
 	assert.Regexp(t, "PD012226", err)
 
-	_, err = txm.DecodeEvent(ctx, txm.p.DB(), []tktypes.Bytes32{validTopic0, tktypes.Bytes32(validTopic1)}, []byte{}, "wrong")
+	_, err = txm.DecodeEvent(ctx, txm.p.NOTX(), []pldtypes.Bytes32{validTopic0, pldtypes.Bytes32(validTopic1)}, []byte{}, "wrong")
 	assert.Regexp(t, "PD020015", err)
 
 }

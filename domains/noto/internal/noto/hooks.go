@@ -18,41 +18,82 @@ package noto
 import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/kaleido-io/paladin/domains/noto/pkg/types"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 )
 
 type MintHookParams struct {
-	Sender   *tktypes.EthAddress `json:"sender"`
-	To       *tktypes.EthAddress `json:"to"`
-	Amount   *tktypes.HexUint256 `json:"amount"`
-	Prepared PreparedTransaction `json:"prepared"`
+	Sender   *pldtypes.EthAddress `json:"sender"`
+	To       *pldtypes.EthAddress `json:"to"`
+	Amount   *pldtypes.HexUint256 `json:"amount"`
+	Data     pldtypes.HexBytes    `json:"data"`
+	Prepared PreparedTransaction  `json:"prepared"`
 }
 
 type TransferHookParams struct {
-	Sender   *tktypes.EthAddress `json:"sender"`
-	From     *tktypes.EthAddress `json:"from"`
-	To       *tktypes.EthAddress `json:"to"`
-	Amount   *tktypes.HexUint256 `json:"amount"`
-	Prepared PreparedTransaction `json:"prepared"`
+	Sender   *pldtypes.EthAddress `json:"sender"`
+	From     *pldtypes.EthAddress `json:"from"`
+	To       *pldtypes.EthAddress `json:"to"`
+	Amount   *pldtypes.HexUint256 `json:"amount"`
+	Data     pldtypes.HexBytes    `json:"data"`
+	Prepared PreparedTransaction  `json:"prepared"`
 }
 
 type BurnHookParams struct {
-	Sender   *tktypes.EthAddress `json:"sender"`
-	From     *tktypes.EthAddress `json:"from"`
-	Amount   *tktypes.HexUint256 `json:"amount"`
-	Prepared PreparedTransaction `json:"prepared"`
+	Sender   *pldtypes.EthAddress `json:"sender"`
+	From     *pldtypes.EthAddress `json:"from"`
+	Amount   *pldtypes.HexUint256 `json:"amount"`
+	Data     pldtypes.HexBytes    `json:"data"`
+	Prepared PreparedTransaction  `json:"prepared"`
 }
 
 type ApproveTransferHookParams struct {
-	Sender   *tktypes.EthAddress `json:"sender"`
-	From     *tktypes.EthAddress `json:"from"`
-	Delegate *tktypes.EthAddress `json:"delegate"`
-	Prepared PreparedTransaction `json:"prepared"`
+	Sender   *pldtypes.EthAddress `json:"sender"`
+	From     *pldtypes.EthAddress `json:"from"`
+	Delegate *pldtypes.EthAddress `json:"delegate"`
+	Data     pldtypes.HexBytes    `json:"data"`
+	Prepared PreparedTransaction  `json:"prepared"`
+}
+
+type LockHookParams struct {
+	Sender   *pldtypes.EthAddress `json:"sender"`
+	LockID   pldtypes.Bytes32     `json:"lockId"`
+	From     *pldtypes.EthAddress `json:"from"`
+	Amount   *pldtypes.HexUint256 `json:"amount"`
+	Data     pldtypes.HexBytes    `json:"data"`
+	Prepared PreparedTransaction  `json:"prepared"`
+}
+
+type UnlockHookParams struct {
+	Sender     *pldtypes.EthAddress       `json:"sender"`
+	LockID     pldtypes.Bytes32           `json:"lockId"`
+	Recipients []*ResolvedUnlockRecipient `json:"recipients"`
+	Data       pldtypes.HexBytes          `json:"data"`
+	Prepared   PreparedTransaction        `json:"prepared"`
+}
+
+type ApproveUnlockHookParams struct {
+	Sender   *pldtypes.EthAddress `json:"sender"`
+	LockID   pldtypes.Bytes32     `json:"lockId"`
+	Delegate *pldtypes.EthAddress `json:"delegate"`
+	Data     pldtypes.HexBytes    `json:"data"`
+	Prepared PreparedTransaction  `json:"prepared"`
+}
+
+type DelegateUnlockHookParams struct {
+	Sender     *pldtypes.EthAddress       `json:"sender"`
+	LockID     pldtypes.Bytes32           `json:"lockId"`
+	Recipients []*ResolvedUnlockRecipient `json:"recipients"`
+	Data       pldtypes.HexBytes          `json:"data"`
 }
 
 type PreparedTransaction struct {
-	ContractAddress *tktypes.EthAddress `json:"contractAddress"`
-	EncodedCall     tktypes.HexBytes    `json:"encodedCall"`
+	ContractAddress *pldtypes.EthAddress `json:"contractAddress"`
+	EncodedCall     pldtypes.HexBytes    `json:"encodedCall"`
+}
+
+type ResolvedUnlockRecipient struct {
+	To     *pldtypes.EthAddress `json:"to"`
+	Amount *pldtypes.HexUint256 `json:"amount"`
 }
 
 func penteInvokeABI(name string, inputs abi.ParameterArray) *abi.Entry {
@@ -83,6 +124,6 @@ func penteInvokeABI(name string, inputs abi.ParameterArray) *abi.Entry {
 
 type PenteInvokeParams struct {
 	Group  *types.PentePrivateGroup `json:"group"`
-	To     *tktypes.EthAddress      `json:"to"`
+	To     *pldtypes.EthAddress     `json:"to"`
 	Inputs any                      `json:"inputs"`
 }

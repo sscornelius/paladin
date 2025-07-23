@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/hyperledger/firefly-common/pkg/i18n"
+	"github.com/kaleido-io/paladin/common/go/pkg/i18n"
 	"github.com/kaleido-io/paladin/config/pkg/confutil"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 	"github.com/kaleido-io/paladin/core/internal/components"
@@ -30,8 +30,8 @@ import (
 	"github.com/kaleido-io/paladin/core/internal/privatetxnmgr/ptmgrtypes"
 	"github.com/kaleido-io/paladin/core/internal/privatetxnmgr/syncpoints"
 
-	"github.com/kaleido-io/paladin/toolkit/pkg/log"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
+	"github.com/kaleido-io/paladin/common/go/pkg/log"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 )
 
 /*
@@ -106,7 +106,7 @@ type Sequencer struct {
 
 	pendingTransactionEvents chan ptmgrtypes.PrivateTransactionEvent
 
-	contractAddress          tktypes.EthAddress // the contract address managed by the current sequencer
+	contractAddress          pldtypes.EthAddress // the contract address managed by the current sequencer
 	defaultSigner            string
 	nodeName                 string
 	domainAPI                components.DomainSmartContract
@@ -130,7 +130,7 @@ func NewSequencer(
 	ctx context.Context,
 	privateTxManager components.PrivateTxManager,
 	nodeName string,
-	contractAddress tktypes.EthAddress,
+	contractAddress pldtypes.EthAddress,
 	sequencerConfig *pldconf.PrivateTxManagerSequencerConfig,
 	allComponents components.AllComponents,
 	domainAPI components.DomainSmartContract,
@@ -194,7 +194,7 @@ func NewSequencer(
 
 	//TODO consolidate the initialization of the endorsement gatherer and the assemble coordinator.  Both need the same domain context - but maybe the assemble coordinator should provide the domain context to the endorsement gatherer on a per request basis
 	//
-	domainSmartContract, err := allComponents.DomainManager().GetSmartContractByAddress(ctx, allComponents.Persistence().DB(), contractAddress)
+	domainSmartContract, err := allComponents.DomainManager().GetSmartContractByAddress(ctx, allComponents.Persistence().NOTX(), contractAddress)
 	if err != nil {
 		log.L(ctx).Errorf("Failed to get domain smart contract for contract address %s: %s", contractAddress, err)
 

@@ -21,34 +21,33 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/hyperledger/firefly-common/pkg/fftypes"
 	"github.com/hyperledger/firefly-signer/pkg/ethsigner"
 	"github.com/kaleido-io/paladin/config/pkg/pldconf"
 
 	"github.com/kaleido-io/paladin/core/mocks/ethclientmocks"
 	"github.com/kaleido-io/paladin/core/pkg/ethclient"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldapi"
+	"github.com/kaleido-io/paladin/sdk/go/pkg/pldtypes"
 	"github.com/kaleido-io/paladin/toolkit/pkg/cache"
-	"github.com/kaleido-io/paladin/toolkit/pkg/pldapi"
-	"github.com/kaleido-io/paladin/toolkit/pkg/tktypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
-func longLivedGasPriceTestCache() cache.Cache[string, *fftypes.JSONAny] {
-	return cache.NewCache[string, *fftypes.JSONAny](&pldconf.CacheConfig{}, &pldconf.PublicTxManagerDefaults.GasPrice.Cache)
+func longLivedGasPriceTestCache() cache.Cache[string, pldtypes.RawJSON] {
+	return cache.NewCache[string, pldtypes.RawJSON](&pldconf.CacheConfig{}, &pldconf.PublicTxManagerDefaults.GasPrice.Cache)
 }
 
 func NewTestFixedPriceGasPriceClient(t *testing.T) GasPriceClient {
 	hgc := &HybridGasPriceClient{}
-	hgc.fixedGasPrice = fftypes.JSONAnyPtr(`{"gasPrice": 10}`)
+	hgc.fixedGasPrice = pldtypes.RawJSON(`{"gasPrice": 10}`)
 	hgc.gasPriceCache = longLivedGasPriceTestCache()
 	return hgc
 }
 
 func NewTestZeroGasPriceChainClient(t *testing.T) GasPriceClient {
 	hgc := &HybridGasPriceClient{}
-	hgc.fixedGasPrice = fftypes.JSONAnyPtr(`0`)
+	hgc.fixedGasPrice = pldtypes.RawJSON(`0`)
 	hgc.hasZeroGasPrice = true
 	hgc.gasPriceCache = longLivedGasPriceTestCache()
 	return hgc
@@ -56,7 +55,7 @@ func NewTestZeroGasPriceChainClient(t *testing.T) GasPriceClient {
 
 func NewTestFixedPriceGasPriceClientEIP1559(t *testing.T) GasPriceClient {
 	hgc := &HybridGasPriceClient{}
-	hgc.fixedGasPrice = fftypes.JSONAnyPtr(`{
+	hgc.fixedGasPrice = pldtypes.RawJSON(`{
 		"maxPriorityFeePerGas": 1,
 		"maxFeePerGas": 10
 	}`)
@@ -113,12 +112,12 @@ func TestSetFixedGasPriceIfConfigured(t *testing.T) {
 func TestGasPriceClientInit(t *testing.T) {
 	ctx := context.Background()
 	hgc := &HybridGasPriceClient{}
-	hgc.fixedGasPrice = fftypes.JSONAnyPtr(`invalid`)
+	hgc.fixedGasPrice = pldtypes.RawJSON(`invalid`)
 	hgc.gasPriceCache = longLivedGasPriceTestCache()
 	assert.False(t, hgc.hasZeroGasPrice)
 	hgc.Init(ctx, nil)
 	assert.False(t, hgc.hasZeroGasPrice)
-	hgc.fixedGasPrice = fftypes.JSONAnyPtr(`0`)
+	hgc.fixedGasPrice = pldtypes.RawJSON(`0`)
 	hgc.Init(ctx, nil)
 	assert.True(t, hgc.hasZeroGasPrice)
 }
@@ -136,7 +135,7 @@ func TestFixedGasPrice(t *testing.T) {
 	gpo, err := hgc.GetGasPriceObject(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, &pldapi.PublicTxGasPricing{
-		GasPrice: tktypes.Int64ToInt256(1020304050),
+		GasPrice: pldtypes.Int64ToInt256(1020304050),
 	}, gpo)
 }
 
@@ -153,7 +152,7 @@ func TestGasPriceClient(t *testing.T) {
 
 	testNodeGasPrice := `"0x03e8"`
 	// fall back to connector when get call failed
-	mEC.On("GasPrice", ctx, mock.Anything).Return(tktypes.Uint64ToUint256(1000), nil).Once()
+	mEC.On("GasPrice", ctx, mock.Anything).Return(pldtypes.Uint64ToUint256(1000), nil).Once()
 	gasPriceJSON, err := hgc.getGasPriceJSON(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, testNodeGasPrice, gasPriceJSON.String())

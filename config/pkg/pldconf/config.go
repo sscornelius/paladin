@@ -15,16 +15,6 @@
 
 package pldconf
 
-import (
-	"context"
-	"os"
-
-	"github.com/hyperledger/firefly-common/pkg/i18n"
-	"github.com/kaleido-io/paladin/config/internal/msgs"
-
-	"sigs.k8s.io/yaml" // because it supports JSON tags, and we embed our structs in the k8s operator
-)
-
 type PaladinConfig struct {
 	DomainManagerConfig    `json:",inline"`
 	PluginManagerConfig    `json:",inline"`
@@ -36,6 +26,7 @@ type PaladinConfig struct {
 	Blockchain             EthClientConfig        `json:"blockchain"`
 	DB                     DBConfig               `json:"db"`
 	RPCServer              RPCServerConfig        `json:"rpcServer"`
+	MetricsServer          MetricsServerConfig    `json:"metricsServer"`
 	DebugServer            DebugServerConfig      `json:"debugServer"`
 	StateStore             StateStoreConfig       `json:"statestore"`
 	BlockIndexer           BlockIndexerConfig     `json:"blockIndexer"`
@@ -44,23 +35,5 @@ type PaladinConfig struct {
 	PrivateTxManager       PrivateTxManagerConfig `json:"privateTxManager"`
 	PublicTxManager        PublicTxManagerConfig  `json:"publicTxManager"`
 	IdentityResolver       IdentityResolverConfig `json:"identityResolver"`
-}
-
-func ReadAndParseYAMLFile(ctx context.Context, filePath string, config interface{}) error {
-	// Note we use the YAML parser (like Kubernetes) that handles json tags
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return i18n.NewError(ctx, msgs.MsgConfigFileMissing, filePath)
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return i18n.NewError(ctx, msgs.MsgConfigFileReadError, filePath, err.Error())
-	}
-
-	err = yaml.Unmarshal(data, config)
-	if err != nil {
-		return i18n.NewError(ctx, msgs.MsgConfigFileParseError, err.Error())
-	}
-
-	return nil
+	GroupManager           GroupManagerConfig     `json:"groupManager"`
 }

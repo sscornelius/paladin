@@ -7,40 +7,45 @@ See the [tutorial](https://lf-decentralized-trust-labs.github.io/paladin/head/tu
 
 ## Pre-requisites
 
-Requires a local 3-node Paladin cluster running on `localhost:31548`, `localhost:31648`, and `localhost:31748`.
+Run the common [setup steps](../README.md) before running the example.
 
-## Run standalone
+## Running the example
 
-Compile [Solidity contracts](../../solidity):
+### Option 1 - `npm` with downloaded solidity contracts
 
-```shell
-cd ../../solidity
-npm install
-npm run compile
-```
+- **Extract contracts**
 
-Build [TypeScript SDK](../../sdk/typescript):
+  - Extract the `abis.tar.gz` file that was downloaded in the [setup steps](../README.md) and copy the `abis` directory to `src/`. (full path should be: `paladin/example/bond/src/abis`)
 
-```shell
-cd ../../sdk/typescript
-npm install
-npm run abi
-npm run build
-```
+- **Run the example**
 
-Run example:
+  ```shell
+  cd <paladin-root>/example/bond
+  npm install
+  npm run start
+  ```
 
-```shell
-npm install
-npm run abi
-npm run start
-```
+---
 
-## Run with Gradle
+### Option 2 - `npm` with locally built solidity contracts and ABIs
 
-The following will perform all pre-requisites and then run the example:
+- **Run the example**
 
-```shell
-../../gradlew build
-npm run start
-```
+  ```shell
+  cd <paladin-root>/example/bond
+  npm install
+  npm run abi
+  npm run start
+  ```
+
+---
+
+### Option 3 - Run with Gradle
+
+- **Run the gradle build task, then run the sample:**
+
+  ```shell
+  cd <paladin-root>/example/bond
+  ../../gradlew build
+  npm run start
+  ```
